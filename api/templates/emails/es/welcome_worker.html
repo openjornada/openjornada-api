@@ -1,0 +1,68 @@
+{% extends "es/base.html" %}
+
+{% block title %}Bienvenido a {{ app_name }}{% endblock %}
+
+{% block content %}
+<h2 style="margin: 0 0 20px 0; font-size: 24px; color: #1f2937;">Bienvenido a {{ app_name }}</h2>
+
+<p style="margin: 0 0 15px 0; font-size: 16px;">Hola {{ worker_name }},</p>
+
+<p style="margin: 0 0 15px 0; font-size: 16px;">
+    Tu cuenta en <strong>{{ app_name }}</strong> ha sido creada por un administrador.
+</p>
+
+<p style="margin: 0 0 20px 0; font-size: 16px;">
+    Para crear una conraseña personalizada y poder hacer registro en tu jornada laboral, haz click en el siguiente botón:
+</p>
+
+<!-- Button -->
+<table width="100%" cellpadding="0" cellspacing="0" style="margin: 30px 0;">
+    <tr>
+        <td align="center">
+            <a href="{{ reset_link }}"
+               style="display: inline-block;
+                      padding: 14px 28px;
+                      background-color: #3b82f6;
+                      color: white;
+                      text-decoration: none;
+                      border-radius: 6px;
+                      font-size: 16px;
+                      font-weight: bold;">
+                Crear contraseña
+            </a>
+        </td>
+    </tr>
+</table>
+
+<p style="margin: 20px 0 10px 0; font-size: 14px; color: #666;">
+    O copia y pega este enlace en tu navegador:
+</p>
+
+<p style="margin: 0 0 30px 0;
+          padding: 15px;
+          background-color: #e5e7eb;
+          border-radius: 6px;
+          word-break: break-all;
+          font-size: 13px;
+          font-family: monospace;">
+    {{ reset_link }}
+</p>
+
+<!-- Warning Box -->
+<table width="100%" cellpadding="0" cellspacing="0" style="margin: 30px 0;">
+    <tr>
+        <td style="background-color: #fef3c7;
+                   border-left: 4px solid #f59e0b;
+                   padding: 20px;
+                   border-radius: 4px;">
+            <p style="margin: 0 0 10px 0; font-size: 16px; font-weight: bold; color: #92400e;">
+                ⚠️ Importante:
+            </p>
+            <ul style="margin: 0; padding-left: 20px; color: #78350f;">
+                <li style="margin-bottom: 8px;">Este enlace es válido por <strong>1 hora</strong></li>
+                <li style="margin-bottom: 8px;">Si no esperabas este correo, ignóralo</li>
+            </ul>
+        </td>
+    </tr>
+</table>
+{% endblock %}
