@@ -349,6 +349,20 @@ docker-compose exec api bash
 docker-compose exec mongodb mongosh
 ```
 
+## 🐳 Imagen Docker
+
+La imagen oficial está disponible en GitHub Container Registry:
+
+```bash
+# Última versión
+docker pull ghcr.io/opentracker-es/opentracker-api:latest
+
+# Versión específica
+docker pull ghcr.io/opentracker-es/opentracker-api:1.0.0
+```
+
+**Plataformas soportadas:** linux/amd64, linux/arm64
+
 ## 🚀 Despliegue en Producción
 
 Para despliegue en producción:
