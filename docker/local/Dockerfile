@@ -5,7 +5,7 @@ WORKDIR /app
 # Install MongoDB database tools (for mongodump/mongorestore)
 # Using tarball for cross-architecture support (ARM64 and x86_64)
 # Version 100.9.0 - tested and working on both architectures
-RUN apt-get update && apt-get install -y wget ca-certificates && \
+RUN apt-get update && apt-get install -y wget ca-certificates libkrb5-3 && \
     ARCH=$(dpkg --print-architecture) && \
     echo "Detected architecture: $ARCH" && \
     if [ "$ARCH" = "arm64" ]; then \
