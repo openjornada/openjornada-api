@@ -468,7 +468,7 @@ async def get_all_time_records(
             date_query["$lte"] = end_utc
 
         if date_query:
-            query["created_at"] = date_query
+            query["timestamp"] = date_query
 
     # Get all time records with applied filters
     time_records = []
@@ -546,8 +546,8 @@ async def get_worker_time_records(
             date_query["$lte"] = end_datetime
         
         if date_query:
-            query["created_at"] = date_query
-    
+            query["timestamp"] = date_query
+
     # Get all time records for this worker with applied filters
     time_records = []
     worker_id_number = worker.get("id_number", "Missing ID")
@@ -821,7 +821,7 @@ async def get_worker_day_records(query: WorkerHistoryQuery):
     mongo_query = {
         "worker_id": worker_id,
         "company_id": query.company_id,
-        "created_at": {
+        "timestamp": {
             "$gte": start_datetime,
             "$lte": end_datetime
         }
