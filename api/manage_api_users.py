@@ -184,6 +184,7 @@ async def main():
     create_parser.add_argument('username', help='Username')
     create_parser.add_argument('email', help='Email address')
     create_parser.add_argument('role', choices=['admin', 'tracker'], help='User role')
+    create_parser.add_argument('--password', '-p', help='Password (if not provided, will prompt interactively)')
     
     # Delete user
     delete_parser = subparsers.add_parser('delete', help='Delete a user')
@@ -227,9 +228,13 @@ async def main():
             if exists:
                 print_error("Username or email already exists")
                 return
-            
-            # Get password
-            password = getpass("Password (min 6 characters): ")
+
+            # Get password (from argument or interactively)
+            if args.password:
+                password = args.password
+            else:
+                password = getpass("Password (min 6 characters): ")
+
             if len(password) < 6:
                 print_error("Password must be at least 6 characters long")
                 return
