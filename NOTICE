@@ -1,8 +1,8 @@
-OpenTracker API - Backend Service
-Copyright (C) 2024 OpenTracker Contributors
+OpenJornada API - Backend Service
+Copyright (C) 2024 OpenJornada Contributors
 
-This component is part of the OpenTracker project:
-https://bitbucket.org/[YOUR-WORKSPACE]/projects/OPENTRACKER
+This component is part of the OpenJornada project:
+https://bitbucket.org/[YOUR-WORKSPACE]/projects/OPENJORNADA
 
 This software is licensed under the GNU Affero General Public License v3.0.
 See the LICENSE file for the full license text.
@@ -12,7 +12,7 @@ See the LICENSE file for the full license text.
 Component Information
 ===============================================================================
 
-Component: OpenTracker API (Backend Service)
+Component: OpenJornada API (Backend Service)
 Language: Python 3.11+
 Framework: FastAPI
 Database: MongoDB with Motor (async driver)
@@ -52,7 +52,7 @@ If you run a modified version of this API on a server and let other users
 communicate with it there, your server must also allow them to download the
 source code corresponding to the modified version running there.
 
-This means that if you use OpenTracker API as a web service (SaaS), you must
+This means that if you use OpenJornada API as a web service (SaaS), you must
 provide access to the source code, including any modifications you have made.
 
 ===============================================================================
@@ -112,13 +112,13 @@ in their respective dependency packages.
 Contributing
 ===============================================================================
 
-By contributing to OpenTracker API, you agree that your contributions will be
+By contributing to OpenJornada API, you agree that your contributions will be
 licensed under the AGPL-3.0 license.
 
 See CONTRIBUTING.md for contribution guidelines specific to this component.
 
 For general project contribution guidelines, see:
-https://bitbucket.org/[YOUR-WORKSPACE]/opentracker-core/src/main/CONTRIBUTING.md
+https://bitbucket.org/[YOUR-WORKSPACE]/openjornada-core/src/main/CONTRIBUTING.md
 
 ===============================================================================
 
@@ -126,10 +126,10 @@ Contact & Support
 ===============================================================================
 
 For issues specific to the API component:
-https://bitbucket.org/[YOUR-WORKSPACE]/opentracker-api/issues
+https://bitbucket.org/[YOUR-WORKSPACE]/openjornada-api/issues
 
 For general project issues and documentation:
-https://bitbucket.org/[YOUR-WORKSPACE]/opentracker-core/issues
+https://bitbucket.org/[YOUR-WORKSPACE]/openjornada-core/issues
 
 For commercial support and consulting services:
 [YOUR CONTACT EMAIL]

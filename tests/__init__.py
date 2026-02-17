@@ -1,1 +1,1 @@
-# Tests package for OpenTracker API
+# Tests package for OpenJornada API

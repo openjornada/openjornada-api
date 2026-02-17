@@ -74,7 +74,7 @@ async def init_default_settings():
         existing = await db.Settings.find_one()
         if not existing:
             default_settings = {
-                "contact_email": "support@opentracker.local",
+                "contact_email": "support@openjornada.local",
                 "webapp_url": "http://localhost:5173"
             }
             await db.Settings.insert_one(default_settings)

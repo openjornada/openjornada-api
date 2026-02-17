@@ -478,7 +478,7 @@ async def update_change_request(
                     new_datetime=change_request.get("new_timestamp"),
                     reason=change_request.get("reason"),
                     admin_public_comment=request_data.admin_public_comment or "",
-                    contact_email=os.getenv("SMTP_FROM_EMAIL", "support@opentracker.local"),
+                    contact_email=os.getenv("SMTP_FROM_EMAIL", "support@openjornada.local"),
                     locale="es"
                 )
             except Exception as e:
@@ -505,7 +505,7 @@ async def update_change_request(
                     new_datetime=change_request.get("new_timestamp"),
                     reason=change_request.get("reason"),
                     admin_public_comment=request_data.admin_public_comment or "",
-                    contact_email=os.getenv("SMTP_FROM_EMAIL", "support@opentracker.local"),
+                    contact_email=os.getenv("SMTP_FROM_EMAIL", "support@openjornada.local"),
                     locale="es"
                 )
             except Exception as e:

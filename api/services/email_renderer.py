@@ -76,7 +76,7 @@ class EmailRenderer:
             html, text = renderer.render(
                 'password_reset_worker.html',
                 {
-                    'app_name': 'OpenTracker',
+                    'app_name': 'OpenJornada',
                     'worker_name': 'Juan',
                     'reset_link': 'https://...',
                     'contact_email': 'support@example.com'

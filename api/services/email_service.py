@@ -60,9 +60,9 @@ class EmailService:
         self.smtp_port = int(os.getenv("SMTP_PORT", "587"))
         self.smtp_user = os.getenv("SMTP_USER", "")
         self.smtp_password = os.getenv("SMTP_PASSWORD", "")
-        self.smtp_from_email = os.getenv("SMTP_FROM_EMAIL", "noreply@opentracker.local")
-        self.smtp_from_name = os.getenv("SMTP_FROM_NAME", "OpenTracker")
-        self.app_name = os.getenv("EMAIL_APP_NAME", "OpenTracker")
+        self.smtp_from_email = os.getenv("SMTP_FROM_EMAIL", "noreply@openjornada.local")
+        self.smtp_from_name = os.getenv("SMTP_FROM_NAME", "OpenJornada")
+        self.app_name = os.getenv("EMAIL_APP_NAME", "OpenJornada")
         self._executor = ThreadPoolExecutor(max_workers=2)
 
         logger.info(f"EmailService initialized - SMTP: {self.smtp_host}:{self.smtp_port}")
@@ -326,6 +326,76 @@ class EmailService:
 
         except Exception as e:
             logger.error(f"[EMAIL] Error preparing email: {e}")
+            import traceback
+            logger.error(f"[EMAIL] Traceback: {traceback.format_exc()}")
+            return False
+
+    async def send_admin_welcome_email(
+        self,
+        to_email: str,
+        username: str,
+        reset_token: str,
+        admin_url: str,
+        webapp_url: str,
+        contact_email: str,
+        locale: str = 'es'
+    ) -> bool:
+        """
+        Send welcome email to new admin user with password setup link.
+
+        Args:
+            to_email: Admin's email address
+            username: Admin's username
+            reset_token: Password reset token for initial password setup
+            admin_url: Base URL of the admin panel
+            webapp_url: Base URL of the webapp (for workers)
+            contact_email: Contact email for support
+            locale: Language code for email template (default: 'es')
+
+        Returns:
+            True if sent successfully, False otherwise
+        """
+        logger.info(f"[EMAIL] send_admin_welcome_email called for: {to_email}")
+        logger.info(f"[EMAIL] Username: {username}, Admin URL: {admin_url}, Webapp URL: {webapp_url}")
+
+        # Build reset link (using admin URL for admin users)
+        reset_link = f"{admin_url}/reset-password/{reset_token}"
+        logger.info(f"[EMAIL] Welcome reset link generated: {reset_link}")
+
+        try:
+            # Render email template
+            html_body, text_body = email_renderer.render(
+                template_name='welcome_admin.html',
+                context={
+                    'app_name': self.app_name,
+                    'username': username,
+                    'reset_link': reset_link,
+                    'admin_url': admin_url,
+                    'webapp_url': webapp_url,
+                    'contact_email': contact_email
+                },
+                locale=locale
+            )
+
+            # Email subject
+            subject = f"Bienvenido a {self.app_name} - Panel de Administracion"
+
+            # Run sync email sending in thread pool
+            logger.info("[EMAIL] Executing admin welcome email send in thread pool...")
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                self._executor,
+                self._send_email_sync,
+                to_email,
+                subject,
+                text_body,
+                html_body
+            )
+            logger.info(f"[EMAIL] Admin welcome email send result: {result}")
+            return result
+
+        except Exception as e:
+            logger.error(f"[EMAIL] Error preparing admin welcome email: {e}")
             import traceback
             logger.error(f"[EMAIL] Traceback: {traceback.format_exc()}")
             return False

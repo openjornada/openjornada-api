@@ -9,6 +9,7 @@ services:
       - ./api:/app/api
       - ./tests:/app/tests
       - ./pytest.ini:/app/pytest.ini
+      - ./backups:/app/backups
     env_file:
       - .env
     environment:
@@ -25,8 +26,8 @@ services:
       - SMTP_USER=${SMTP_USER}
       - SMTP_PASSWORD=${SMTP_PASSWORD}
       - SMTP_FROM_EMAIL=${SMTP_FROM_EMAIL}
-      - SMTP_FROM_NAME=${SMTP_FROM_NAME:-OpenTracker}
-      - EMAIL_APP_NAME=${EMAIL_APP_NAME:-OpenTracker}
+      - SMTP_FROM_NAME=${SMTP_FROM_NAME:-OpenJornada}
+      - EMAIL_APP_NAME=${EMAIL_APP_NAME:-OpenJornada}
     depends_on:
       - mongodb
 

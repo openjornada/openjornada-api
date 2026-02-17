@@ -7,7 +7,8 @@ Usage: python -m api.manage_api_users --help
 import asyncio
 import sys
 import os
-from datetime import datetime
+import secrets
+from datetime import datetime, timedelta
 from getpass import getpass
 import argparse
 from typing import Optional, List
@@ -16,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from api.database import db, client
 from api.auth.auth_handler import get_password_hash
+from api.services.email_service import EmailService
 from bson import ObjectId
 
 
@@ -184,6 +186,9 @@ async def main():
     create_parser.add_argument('username', help='Username')
     create_parser.add_argument('email', help='Email address')
     create_parser.add_argument('role', choices=['admin', 'tracker'], help='User role')
+    create_parser.add_argument('--password', '-p', help='Password (if not provided, will prompt interactively)')
+    create_parser.add_argument('--send-welcome-email', '-w', action='store_true',
+                               help='Send welcome email with password reset link (only for admin users)')
     
     # Delete user
     delete_parser = subparsers.add_parser('delete', help='Delete a user')
@@ -208,7 +213,11 @@ async def main():
     
     # List users
     list_parser = subparsers.add_parser('list', help='List all users')
-    
+
+    # Send welcome email
+    welcome_parser = subparsers.add_parser('welcome', help='Send welcome email to existing admin user')
+    welcome_parser.add_argument('email', help='Email of the admin user')
+
     args = parser.parse_args()
     
     if not args.command:
@@ -227,13 +236,23 @@ async def main():
             if exists:
                 print_error("Username or email already exists")
                 return
-            
-            # Get password
-            password = getpass("Password (min 6 characters): ")
+
+            # Handle --send-welcome-email flag
+            send_welcome = getattr(args, 'send_welcome_email', False)
+            if send_welcome and args.role == 'tracker':
+                print_warning("--send-welcome-email only applies to admin users. Ignoring flag.")
+                send_welcome = False
+
+            # Get password (from argument or interactively)
+            if args.password:
+                password = args.password
+            else:
+                password = getpass("Password (min 6 characters): ")
+
             if len(password) < 6:
                 print_error("Password must be at least 6 characters long")
                 return
-            
+
             # Create user
             user_data = {
                 "username": args.username,
@@ -243,9 +262,54 @@ async def main():
                 "hashed_password": get_password_hash(password),
                 "created_at": datetime.utcnow()
             }
-            
-            await db.APIUsers.insert_one(user_data)
+
+            result = await db.APIUsers.insert_one(user_data)
             print_success(f"User '{args.username}' created successfully!")
+
+            # Send welcome email if requested (only for admin users)
+            if send_welcome and args.role == 'admin':
+                print_info("Sending welcome email...")
+
+                # Get URLs from environment
+                admin_url = os.environ.get('ADMIN_URL', '')
+                webapp_url = os.environ.get('WEBAPP_URL', '')
+
+                if not admin_url:
+                    print_warning("ADMIN_URL not set. Cannot send welcome email.")
+                else:
+                    try:
+                        # Generate reset token
+                        reset_token = secrets.token_urlsafe(32)
+                        reset_token_expires = datetime.utcnow() + timedelta(hours=24)
+
+                        # Save token to user document (same format as forgot-password)
+                        await db.APIUsers.update_one(
+                            {"_id": result.inserted_id},
+                            {
+                                "$set": {
+                                    "reset_token": reset_token,
+                                    "reset_token_expires": reset_token_expires
+                                }
+                            }
+                        )
+
+                        # Send welcome email
+                        email_service = EmailService()
+                        email_sent = await email_service.send_admin_welcome_email(
+                            to_email=args.email.lower(),
+                            username=args.username,
+                            reset_token=reset_token,
+                            admin_url=admin_url,
+                            webapp_url=webapp_url,
+                            contact_email="info@openjornada.es"
+                        )
+
+                        if email_sent:
+                            print_success(f"Welcome email sent to {args.email}")
+                        else:
+                            print_warning("Failed to send welcome email. Check SMTP configuration.")
+                    except Exception as e:
+                        print_warning(f"Error sending welcome email: {str(e)}")
             
         elif args.command == 'delete':
             await delete_user(args.username)
@@ -267,20 +331,76 @@ async def main():
             users = []
             async for user in db.APIUsers.find():
                 users.append(user)
-            
+
             if not users:
                 print_info("No users found")
                 return
-            
+
             print(f"\n{'Username':<20} {'Email':<30} {'Role':<10} {'Active':<8}")
             print("-" * 70)
-            
+
             for user in users:
                 active_status = "Yes" if user.get('is_active', True) else "No"
                 print(f"{user['username']:<20} {user['email']:<30} {user['role']:<10} {active_status:<8}")
-            
+
             print(f"\nTotal users: {len(users)}")
-            
+
+        elif args.command == 'welcome':
+            # Find user by email
+            user = await db.APIUsers.find_one({"email": args.email.lower()})
+
+            if not user:
+                print_error(f"User with email '{args.email}' not found")
+                return
+
+            if user.get('role') != 'admin':
+                print_error(f"User '{user['username']}' is not an admin (role: {user.get('role')})")
+                return
+
+            # Get URLs from environment
+            admin_url = os.environ.get('ADMIN_URL', '')
+            webapp_url = os.environ.get('WEBAPP_URL', '')
+
+            if not admin_url:
+                print_error("ADMIN_URL not set. Cannot send welcome email.")
+                return
+
+            print_info(f"Sending welcome email to {user['username']} ({args.email})...")
+
+            try:
+                # Generate reset token
+                reset_token = secrets.token_urlsafe(32)
+                reset_token_expires = datetime.utcnow() + timedelta(hours=24)
+
+                # Save token to user document
+                await db.APIUsers.update_one(
+                    {"_id": user["_id"]},
+                    {
+                        "$set": {
+                            "reset_token": reset_token,
+                            "reset_token_expires": reset_token_expires
+                        }
+                    }
+                )
+
+                # Send welcome email
+                email_service = EmailService()
+                email_sent = await email_service.send_admin_welcome_email(
+                    to_email=args.email.lower(),
+                    username=user['username'],
+                    reset_token=reset_token,
+                    admin_url=admin_url,
+                    webapp_url=webapp_url,
+                    contact_email="info@openjornada.es"
+                )
+
+                if email_sent:
+                    print_success(f"Welcome email sent to {args.email}")
+                else:
+                    print_error("Failed to send welcome email. Check SMTP configuration.")
+            except Exception as e:
+                print_error(f"Error sending welcome email: {str(e)}")
+
     except KeyboardInterrupt:
         print_warning("\nOperation cancelled")
     except Exception as e:

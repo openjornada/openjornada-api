@@ -1,15 +1,15 @@
-# Contributing to OpenTracker API
+# Contributing to OpenJornada API
 
-Thank you for your interest in contributing to the OpenTracker API component!
+Thank you for your interest in contributing to the OpenJornada API component!
 
-> **Note**: This is part of the [OpenTracker Project](https://bitbucket.org/[YOUR-WORKSPACE]/projects/OPENTRACKER).
-> For general project information and documentation, see [opentracker-core](https://bitbucket.org/[YOUR-WORKSPACE]/opentracker-core).
+> **Note**: This is part of the [OpenJornada Project](https://bitbucket.org/[YOUR-WORKSPACE]/projects/OPENJORNADA).
+> For general project information and documentation, see [openjornada-core](https://bitbucket.org/[YOUR-WORKSPACE]/openjornada-core).
 
 ## 📋 Quick Links
 
-- [Main Project Documentation](https://bitbucket.org/[YOUR-WORKSPACE]/opentracker-core/src/main/docs/)
-- [General Contributing Guidelines](https://bitbucket.org/[YOUR-WORKSPACE]/opentracker-core/src/main/CONTRIBUTING.md)
-- [API Documentation](https://bitbucket.org/[YOUR-WORKSPACE]/opentracker-core/src/main/docs/API.md)
+- [Main Project Documentation](https://bitbucket.org/[YOUR-WORKSPACE]/openjornada-core/src/main/docs/)
+- [General Contributing Guidelines](https://bitbucket.org/[YOUR-WORKSPACE]/openjornada-core/src/main/CONTRIBUTING.md)
+- [API Documentation](https://bitbucket.org/[YOUR-WORKSPACE]/openjornada-core/src/main/docs/API.md)
 
 ## 🚀 API Development Setup
 
@@ -23,8 +23,8 @@ Thank you for your interest in contributing to the OpenTracker API component!
 
 ```bash
 # Clone this repository
-git clone git@bitbucket.org:[YOUR-WORKSPACE]/opentracker-api.git
-cd opentracker-api
+git clone git@bitbucket.org:[YOUR-WORKSPACE]/openjornada-api.git
+cd openjornada-api
 
 # Create virtual environment
 python -m venv venv
@@ -44,8 +44,8 @@ uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
 ### With Docker
 
 ```bash
-docker build -t opentracker-api .
-docker run -p 8000:8000 --env-file .env opentracker-api
+docker build -t openjornada-api .
+docker run -p 8000:8000 --env-file .env openjornada-api
 ```
 
 ## 📝 Coding Standards for Python/FastAPI
@@ -218,20 +218,20 @@ Test complete workflows, including database operations.
 When adding or modifying endpoints:
 
 1. Update docstrings in the code
-2. Update API documentation in `opentracker-core/docs/API.md`
+2. Update API documentation in `openjornada-core/docs/API.md`
 3. Add examples in docstrings
 
 ## ⚖️ License Agreement
 
-By contributing to OpenTracker API, you agree that:
+By contributing to OpenJornada API, you agree that:
 
 1. Your contributions will be licensed under **AGPL-3.0**
 2. You have the right to contribute the code
 3. All new source files must include the license header:
 
 ```python
-# OpenTracker - Sistema de Registro de Jornada Laboral
-# Copyright (C) 2024 OpenTracker Contributors
+# OpenJornada - Sistema de Registro de Jornada Laboral
+# Copyright (C) 2024 HappyAndroids (https://happyandroids.com)
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as published
@@ -254,7 +254,7 @@ docker-compose logs -f api
 ### Access MongoDB
 ```bash
 docker-compose exec mongodb mongosh
-use opentracker
+use openjornada
 db.time_records.find().limit(10)
 ```
 
@@ -297,7 +297,7 @@ Add this to `.vscode/launch.json`:
 
 ---
 
-Thank you for contributing to OpenTracker API! 🚀
+Thank you for contributing to OpenJornada API! 🚀
 
 For questions specific to this component, open an issue in this repository.
-For general project questions, see [opentracker-core](https://bitbucket.org/[YOUR-WORKSPACE]/opentracker-core).
+For general project questions, see [openjornada-core](https://bitbucket.org/[YOUR-WORKSPACE]/openjornada-core).

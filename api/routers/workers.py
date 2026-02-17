@@ -97,7 +97,7 @@ async def create_worker(
         )
         
         settings = await db.Settings.find_one()
-        contact_email = settings.get("contact_email", "support@opentracker.local") if settings else "support@opentracker.local"
+        contact_email = settings.get("contact_email", "support@openjornada.local") if settings else "support@openjornada.local"
         import os
         webapp_url = os.getenv("WEBAPP_URL", "http://localhost:5173")
        
@@ -464,7 +464,7 @@ async def forgot_password(request: ForgotPasswordRequest):
         # Get settings for contact_email and URLs from environment
         logger.info("[FORGOT-PASSWORD] Fetching settings from database...")
         settings = await db.Settings.find_one()
-        contact_email = settings.get("contact_email", "support@opentracker.local") if settings else "support@opentracker.local"
+        contact_email = settings.get("contact_email", "support@openjornada.local") if settings else "support@openjornada.local"
 
         # Get URLs from environment variables
         import os

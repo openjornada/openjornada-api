@@ -1,5 +1,5 @@
-# OpenTracker - Sistema de Registro de Jornada Laboral
-# Copyright (C) 2024 OpenTracker Contributors
+# OpenJornada - Sistema de Registro de Jornada Laboral
+# Copyright (C) 2024 HappyAndroids (https://happyandroids.com)
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as published
@@ -9,14 +9,14 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="opentracker-api",
+    name="openjornada-api",
     version="1.0.0",
-    description="OpenTracker API - Sistema de Registro de Jornada Laboral",
+    description="OpenJornada API - Sistema de Registro de Jornada Laboral",
     long_description=open("../README.md").read() if __name__ == "__main__" else "",
     long_description_content_type="text/markdown",
-    author="OpenTracker Contributors",
-    author_email="contact@opentracker.com",
-    url="https://github.com/[YOUR-ORG]/opentracker",
+    author="HappyAndroids",
+    author_email="info@openjornada.es",
+    url="https://www.openjornada.es",
     license="AGPL-3.0",
     packages=find_packages(),
     python_requires=">=3.10",
@@ -43,10 +43,12 @@ setup(
         "Topic :: Office/Business",
         "Topic :: Software Development :: Libraries :: Application Frameworks",
     ],
-    keywords="time-tracking workforce-management agpl open-source",
+    keywords="time-tracking workforce-management agpl open-source openjornada",
     project_urls={
-        "Bug Reports": "https://github.com/[YOUR-ORG]/opentracker/issues",
-        "Source": "https://github.com/[YOUR-ORG]/opentracker",
-        "Documentation": "https://github.com/[YOUR-ORG]/opentracker/tree/main/docs",
+        "Homepage": "https://www.openjornada.es",
+        "Bug Reports": "https://github.com/openjornada/openjornada-api/issues",
+        "Source": "https://github.com/openjornada/openjornada-api",
+        "Documentation": "https://github.com/openjornada/openjornada-api/tree/main/docs",
+        "Author": "https://happyandroids.com",
     },
 )

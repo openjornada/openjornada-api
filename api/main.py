@@ -54,6 +54,12 @@ app.include_router(gdpr.router, tags=["GDPR"])
 async def startup():
     await init_db()
     await init_default_settings()
+    await scheduler_service.start()
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    scheduler_service.stop()
 
 
 @app.get("/", tags=["Health"])
