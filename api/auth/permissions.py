@@ -27,7 +27,17 @@ ROLE_PERMISSIONS = {
         "view_incidents",
         "manage_incidents",
         "view_settings",
-        "update_settings"
+        "update_settings",
+        "view_backups",
+        "manage_backups",
+        "view_reports",
+        "export_reports",
+        "manage_inspection"
+    ],
+    "inspector": [
+        "view_reports",
+        "export_reports",
+        "view_companies",
     ],
     "tracker": [
         "create_time_records",

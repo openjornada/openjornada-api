@@ -13,7 +13,7 @@ class APIUserBase(BaseModel):
     username: str
     email: EmailStr
     is_active: bool = True
-    role: Literal["admin", "tracker"] = "tracker"  # Default role is tracker
+    role: Literal["admin", "tracker", "inspector"] = "tracker"  # Default role is tracker
 
 class APIUserCreate(APIUserBase):
     password: str

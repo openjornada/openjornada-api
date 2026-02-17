@@ -44,6 +44,16 @@ async def init_db():
         await db.TimeRecords.create_index([("worker_id", 1), ("company_id", 1)])
         await db.TimeRecords.create_index([("worker_id", 1), ("company_id", 1), ("created_at", 1)])
 
+        # Indexes for Reports
+        await db.TimeRecords.create_index([("company_id", 1), ("timestamp", 1)])
+        await db.TimeRecords.create_index([("worker_id", 1), ("company_id", 1), ("timestamp", 1)])
+
+        # Indexes for MonthlySignatures
+        await db.MonthlySignatures.create_index(
+            [("worker_id", 1), ("company_id", 1), ("year", 1), ("month", 1)],
+            unique=True,
+        )
+
         # Create indexes for ChangeRequests
         await db.ChangeRequests.create_index("worker_id")
         await db.ChangeRequests.create_index("status")

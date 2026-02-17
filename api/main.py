@@ -6,7 +6,8 @@ import logging
 from dotenv import load_dotenv
 
 from .database import init_db, init_default_settings
-from .routers import workers, time_records, auth, incidents, settings, companies, pause_types, change_requests, gdpr
+from .routers import workers, time_records, auth, incidents, settings, companies, pause_types, change_requests, gdpr, backups, reports
+from .services.scheduler_service import scheduler_service
 
 load_dotenv()
 
@@ -44,6 +45,8 @@ app.include_router(pause_types.router, prefix="/api", tags=["Pause Types"])
 app.include_router(incidents.router, prefix="/api/incidents", tags=["Incidents"])
 app.include_router(change_requests.router, prefix="/api/change-requests", tags=["Change Requests"])
 app.include_router(settings.router, prefix="/api", tags=["Settings"])
+app.include_router(backups.router, prefix="/api", tags=["Backups"])
+app.include_router(reports.router, prefix="/api", tags=["Reports & Inspection"])
 app.include_router(gdpr.router, tags=["GDPR"])
 
 
