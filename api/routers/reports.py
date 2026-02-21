@@ -511,10 +511,11 @@ async def get_worker_signature_status(
     """
     Devuelve el estado de firma de los últimos 12 meses para un trabajador.
 
+    Solo se incluyen meses en los que el trabajador tiene registros de tiempo.
     Los meses se clasifican en dos grupos:
 
     - ``signed``: meses con firma registrada (incluye ``signed_at``).
-    - ``pending``: meses anteriores al mes actual sin firma registrada.
+    - ``pending``: meses con registros de tiempo pero sin firma.
 
     La autenticación se realiza con email y contraseña (sin JWT). Los campos
     ``year`` y ``month`` del cuerpo de la petición son ignorados; se utilizan
@@ -539,6 +540,31 @@ async def get_worker_signature_status(
         candidate_months.append((y, m))
 
     oldest_year = candidate_months[-1][0]
+    oldest_month = candidate_months[-1][1]
+
+    # Find months where the worker actually has time records
+    oldest_date = datetime(oldest_year, oldest_month, 1, tzinfo=dt_timezone.utc)
+    records_pipeline = [
+        {
+            "$match": {
+                "worker_id": worker_id,
+                "company_id": request.company_id,
+                "timestamp": {"$gte": oldest_date},
+            },
+        },
+        {
+            "$group": {
+                "_id": {
+                    "year": {"$year": "$timestamp"},
+                    "month": {"$month": "$timestamp"},
+                },
+            },
+        },
+    ]
+    months_with_records: set[tuple[int, int]] = set()
+    async for doc in db.TimeRecords.aggregate(records_pipeline):
+        months_with_records.add((doc["_id"]["year"], doc["_id"]["month"]))
+
     signatures_cursor = db.MonthlySignatures.find({
         "worker_id": worker_id,
         "company_id": request.company_id,
@@ -564,7 +590,7 @@ async def get_worker_signature_status(
                 "status": "signed",
                 "signed_at": signed_set[key].isoformat() if signed_set[key] else None,
             })
-        else:
+        elif key in months_with_records:
             pending.append({"year": year, "month": month, "status": "pending"})
 
     logger.info(
