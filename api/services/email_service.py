@@ -60,7 +60,7 @@ class EmailService:
         self.smtp_port = int(os.getenv("SMTP_PORT", "587"))
         self.smtp_user = os.getenv("SMTP_USER", "")
         self.smtp_password = os.getenv("SMTP_PASSWORD", "")
-        self.smtp_from_email = os.getenv("SMTP_FROM_EMAIL", "noreply@openjornada.local")
+        self.smtp_from_email = os.getenv("SMTP_FROM_EMAIL", "noreply@openjornada.es")
         self.smtp_from_name = os.getenv("SMTP_FROM_NAME", "OpenJornada")
         self.app_name = os.getenv("EMAIL_APP_NAME", "OpenJornada")
         self._executor = ThreadPoolExecutor(max_workers=2)

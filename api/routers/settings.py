@@ -72,7 +72,7 @@ async def get_settings(current_user: APIUser = Depends(PermissionChecker("view_s
     # If no settings exist, create default
     if not settings:
         default_settings = {
-            "contact_email": "support@openjornada.local"
+            "contact_email": "support@openjornada.es"
         }
         result = await db.Settings.insert_one(default_settings)
         settings = await db.Settings.find_one({"_id": result.inserted_id})
@@ -95,7 +95,7 @@ async def update_settings(
     if not settings:
         # Create default settings first
         default_settings = {
-            "contact_email": "support@openjornada.local"
+            "contact_email": "support@openjornada.es"
         }
         result = await db.Settings.insert_one(default_settings)
         settings = await db.Settings.find_one({"_id": result.inserted_id})
