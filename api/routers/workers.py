@@ -203,6 +203,13 @@ async def update_worker(
         update_data["hashed_password"] = hashed_password
         del update_data["password"]
 
+    # Handle sms_enabled -> store in sms_config subdocument
+    if "sms_enabled" in update_data:
+        sms_enabled = update_data.pop("sms_enabled")
+        existing_sms_config = worker.get("sms_config", {})
+        existing_sms_config["sms_enabled"] = sms_enabled
+        update_data["sms_config"] = existing_sms_config
+
     # Update last modified
     update_data["updated_at"] = datetime.utcnow()
     update_data["updated_by"] = current_user.username

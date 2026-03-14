@@ -2,6 +2,8 @@ from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, ClassVar, List
 from datetime import datetime
 
+from .sms import SmsWorkerConfig
+
 class WorkerModel(BaseModel):
     first_name: str
     last_name: str
@@ -22,6 +24,7 @@ class WorkerUpdateModel(BaseModel):
     id_number: Optional[str] = None
     password: Optional[str] = None  # Para actualizar la contraseña
     company_ids: Optional[List[str]] = Field(None, min_length=1, description="Lista de IDs de empresas asociadas")
+    sms_enabled: Optional[bool] = None
 
 class WorkerResponse(BaseModel):
     id: str
@@ -36,6 +39,7 @@ class WorkerResponse(BaseModel):
     deleted_by: Optional[str] = None
     company_ids: List[str] = Field(default_factory=list, description="Lista de IDs de empresas asociadas")
     company_names: List[str] = Field(default_factory=list, description="Nombres de las empresas asociadas")
+    sms_config: Optional[SmsWorkerConfig] = None
     # No incluimos la contraseña en la respuesta
 
 class ChangePasswordRequest(BaseModel):

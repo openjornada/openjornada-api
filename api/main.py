@@ -7,7 +7,9 @@ from dotenv import load_dotenv
 
 from .database import init_db, init_default_settings
 from .routers import workers, time_records, auth, incidents, settings, companies, pause_types, change_requests, gdpr, backups, reports
+from .routers import sms
 from .services.scheduler_service import scheduler_service
+from .services.sms_service import sms_service
 
 load_dotenv()
 
@@ -48,12 +50,14 @@ app.include_router(settings.router, prefix="/api", tags=["Settings"])
 app.include_router(backups.router, prefix="/api", tags=["Backups"])
 app.include_router(reports.router, prefix="/api", tags=["Reports & Inspection"])
 app.include_router(gdpr.router, tags=["GDPR"])
+app.include_router(sms.router, prefix="/api", tags=["SMS"])
 
 
 @app.on_event("startup")
 async def startup():
     await init_db()
     await init_default_settings()
+    await sms_service.initialize()
     await scheduler_service.start()
 
 
