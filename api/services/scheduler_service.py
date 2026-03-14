@@ -1,6 +1,8 @@
 """
 Scheduler service for automated backups and SMS reminders using APScheduler.
 """
+from __future__ import annotations
+
 import asyncio
 import logging
 from datetime import datetime, timezone
