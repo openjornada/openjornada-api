@@ -1,32 +1,29 @@
-from pydantic import BaseModel, Field
+import re
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, Literal
 from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+
+# ============================================================================
+# Shared Constants
+# ============================================================================
+
+DEFAULT_SMS_TEMPLATE = "OpenJornada: Hola {%worker_name%}, llevas {%hours_open%}h con tu jornada abierta en {%company_name%}. Si ya terminaste, no olvides registrar tu salida. Recordatorio {%reminder_number%}."
+
+AVAILABLE_TAGS = [
+    {"tag": "{%worker_name%}", "description": "Nombre completo del trabajador", "example": "Juan García"},
+    {"tag": "{%company_name%}", "description": "Nombre de la empresa", "example": "HappyAndroids"},
+    {"tag": "{%hours_open%}", "description": "Horas con jornada abierta", "example": "4.5"},
+    {"tag": "{%reminder_number%}", "description": "Número del recordatorio", "example": "2"},
+]
+
+_TIME_PATTERN = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
 # ============================================================================
 # SMS Log Models
 # ============================================================================
-
-class SmsLogEntry(BaseModel):
-    """Record of each SMS sent."""
-    worker_id: str
-    company_id: str
-    phone_number: str
-    time_record_entry_id: str
-    message_type: Literal["shift_reminder", "custom"] = "shift_reminder"
-    reminder_number: int  # 1st, 2nd, 3rd, etc.
-    status: Literal["sent", "delivered", "failed"] = "sent"
-    provider: str = "labsmobile"
-    provider_message_id: Optional[str] = None
-    error_message: Optional[str] = None
-    cost_credits: float = 1.0
-    # Denormalized worker fields stored at send time for history display
-    worker_name: Optional[str] = None
-    worker_id_number: Optional[str] = None  # DNI
-    message: Optional[str] = None  # Full SMS text
-    created_at: datetime
-    delivered_at: Optional[datetime] = None
-
 
 class SmsSendRequest(BaseModel):
     """Request body for sending a custom SMS to a worker."""
@@ -117,6 +114,22 @@ class SmsCompanyConfig(BaseModel):
     active_hours_end: str = "23:00"    # HH:MM
     timezone: str = "Europe/Madrid"
 
+    @field_validator("active_hours_start", "active_hours_end")
+    @classmethod
+    def validate_time_format(cls, v: str) -> str:
+        if not _TIME_PATTERN.match(v):
+            raise ValueError("El formato de hora debe ser HH:MM (00:00-23:59)")
+        return v
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, v: str) -> str:
+        try:
+            ZoneInfo(v)
+        except (ZoneInfoNotFoundError, KeyError):
+            raise ValueError(f"Zona horaria inválida: {v}")
+        return v
+
 
 class SmsCompanyConfigUpdate(BaseModel):
     """Partial update for company SMS config."""
@@ -127,6 +140,26 @@ class SmsCompanyConfigUpdate(BaseModel):
     active_hours_start: Optional[str] = None
     active_hours_end: Optional[str] = None
     timezone: Optional[str] = None
+
+    @field_validator("active_hours_start", "active_hours_end")
+    @classmethod
+    def validate_time_format(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        if not _TIME_PATTERN.match(v):
+            raise ValueError("El formato de hora debe ser HH:MM (00:00-23:59)")
+        return v
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        try:
+            ZoneInfo(v)
+        except (ZoneInfoNotFoundError, KeyError):
+            raise ValueError(f"Zona horaria inválida: {v}")
+        return v
 
 
 class SmsWorkerConfig(BaseModel):
@@ -147,7 +180,7 @@ class SmsWorkerConfigUpdate(BaseModel):
 class SmsProviderConfigInput(BaseModel):
     """SMS provider configuration input (plain credentials)."""
     provider: Literal["labsmobile"] = "labsmobile"
-    api_token: str  # LabsMobile: Base64(username:api_key)
+    api_token: Optional[str] = None  # LabsMobile: Base64(username:api_key)
     sender_id: str = "OpenJornada"
     enabled: bool = True
 
@@ -215,4 +248,4 @@ class SmsTemplateResponse(BaseModel):
 
 class SmsTemplateUpdate(BaseModel):
     """Request body for updating the SMS reminder template."""
-    template: str = Field(..., max_length=480)
+    template: str = Field(..., min_length=10, max_length=480)

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -232,12 +232,17 @@ class SchedulerService:
 
         now_utc = datetime.now(timezone.utc)
 
+        # Only look at entries within a reasonable time window
+        max_lookback_hours = first_after_hours + (max_reminders * repeat_interval_hours) + 1
+        lookback_cutoff = now_utc - timedelta(hours=max_lookback_hours)
+
         # Find open entry records for this company:
         # An open shift = a "entry" record that has no corresponding "exit" for the same worker
         # We look for entry records, then check if there's a later exit
         open_entries_cursor = db.TimeRecords.find({
             "company_id": company_id,
-            "type": "entry"
+            "type": "entry",
+            "timestamp": {"$gte": lookback_cutoff}
         }).sort("timestamp", -1)
 
         async for entry_record in open_entries_cursor:

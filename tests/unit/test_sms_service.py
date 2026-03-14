@@ -455,8 +455,11 @@ class TestReload:
         """
         service = _make_service()
         # Simulate a previously initialised (enabled) state.
+        # Use AsyncMock so that await self._provider.close() works correctly.
         service._enabled = True
-        service._provider = MagicMock()
+        mock_provider = MagicMock()
+        mock_provider.close = AsyncMock()
+        service._provider = mock_provider
         service._unlimited_balance = True
 
         with patch("api.services.sms_service.os.getenv", side_effect=lambda k, d="": d), \
@@ -464,6 +467,8 @@ class TestReload:
             mock_db.Settings.find_one = AsyncMock(return_value=None)
             await service.reload()
 
+        # close() must have been called on the old provider.
+        mock_provider.close.assert_awaited_once()
         # State must have been reset and re-evaluated.
         assert service.is_enabled() is False
         assert service._provider is None

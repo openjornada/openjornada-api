@@ -130,7 +130,7 @@ async def update_settings(
 
     # Handle sms_provider_config
     if settings_update.sms_provider_config is not None:
-        sms_stored = _process_sms_provider_config(settings_update.sms_provider_config)
+        sms_stored = _process_sms_provider_config(settings_update.sms_provider_config, settings.get("sms_provider_config"))
         update_data["sms_provider_config"] = sms_stored
 
     if not update_data:
@@ -213,13 +213,18 @@ def _process_backup_config(backup_input: BackupConfigInput, existing_config: dic
     return stored
 
 
-def _process_sms_provider_config(sms_input: SmsProviderConfigInput) -> dict:
+def _process_sms_provider_config(sms_input: SmsProviderConfigInput, existing_config: dict | None = None) -> dict:
     """
     Process SMS provider config input and encrypt the API token.
+    Preserves existing encrypted credentials if api_token is not provided.
     """
-    return {
+    result = {
         "provider": sms_input.provider,
-        "api_token_encrypted": credential_encryption.encrypt(sms_input.api_token),
         "sender_id": sms_input.sender_id,
         "enabled": sms_input.enabled
     }
+    if sms_input.api_token:
+        result["api_token_encrypted"] = credential_encryption.encrypt(sms_input.api_token)
+    elif existing_config and existing_config.get("api_token_encrypted"):
+        result["api_token_encrypted"] = existing_config["api_token_encrypted"]
+    return result

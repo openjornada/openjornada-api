@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -19,6 +21,18 @@ logging.basicConfig(
     format='%(levelname)s: %(message)s'
 )
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await init_db()
+    await init_default_settings()
+    await sms_service.initialize()
+    await scheduler_service.start()
+    yield
+    scheduler_service.stop()
+    await sms_service.close()
+
+
 app = FastAPI(
     title="Time Tracking API",
     description="API for tracking workers' time entries",
@@ -26,7 +40,8 @@ app = FastAPI(
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
-    root_path=os.getenv("ROOT_PATH", "")
+    root_path=os.getenv("ROOT_PATH", ""),
+    lifespan=lifespan
 )
 
 # CORS
@@ -53,26 +68,13 @@ app.include_router(gdpr.router, tags=["GDPR"])
 app.include_router(sms.router, prefix="/api", tags=["SMS"])
 
 
-@app.on_event("startup")
-async def startup():
-    await init_db()
-    await init_default_settings()
-    await sms_service.initialize()
-    await scheduler_service.start()
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    scheduler_service.stop()
-
-
 @app.get("/", tags=["Health"])
 async def health_check():
     return {"status": "healthy"}
 
 
 if __name__ == "__main__":
-    uvicorn.run("app.main:app", 
-                host=os.getenv("API_HOST", "0.0.0.0"), 
-                port=int(os.getenv("API_PORT", 8000)), 
+    uvicorn.run("app.main:app",
+                host=os.getenv("API_HOST", "0.0.0.0"),
+                port=int(os.getenv("API_PORT", 8000)),
                 reload=os.getenv("DEBUG", "False").lower() == "true")

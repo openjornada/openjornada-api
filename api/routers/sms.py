@@ -2,16 +2,20 @@
 SMS router: endpoints for SMS configuration, logs, credits, and dashboard.
 """
 
-from datetime import date, datetime, timezone
+import re
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from bson import ObjectId
+from bson.errors import InvalidId
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from ..auth.permissions import PermissionChecker
 from ..database import db, convert_id
 from ..models.auth import APIUser
 from ..models.sms import (
+    DEFAULT_SMS_TEMPLATE,
+    AVAILABLE_TAGS,
     SmsCompanyConfig,
     SmsCompanyConfigUpdate,
     SmsCreditsResponse,
@@ -32,19 +36,18 @@ from ..models.sms import (
 
 router = APIRouter()
 
+_PHONE_PATTERN = re.compile(r"^\+?[1-9]\d{6,14}$")
 
-# ============================================================================
-# Constants: SMS Template
-# ============================================================================
 
-DEFAULT_SMS_TEMPLATE = "OpenJornada: Hola {%worker_name%}, llevas {%hours_open%}h con tu jornada abierta en {%company_name%}. Si ya terminaste, no olvides registrar tu salida. Recordatorio {%reminder_number%}."
-
-AVAILABLE_TAGS = [
-    {"tag": "{%worker_name%}", "description": "Nombre completo del trabajador", "example": "Juan García"},
-    {"tag": "{%company_name%}", "description": "Nombre de la empresa", "example": "HappyAndroids"},
-    {"tag": "{%hours_open%}", "description": "Horas con jornada abierta", "example": "4.5"},
-    {"tag": "{%reminder_number%}", "description": "Número del recordatorio", "example": "2"},
-]
+def _validate_phone_number(phone: str) -> str:
+    """Validate and clean phone number format."""
+    cleaned = phone.strip().replace(" ", "").replace("-", "")
+    if not _PHONE_PATTERN.match(cleaned):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Formato de teléfono inválido: {phone}"
+        )
+    return cleaned
 
 
 # ============================================================================
@@ -53,7 +56,7 @@ AVAILABLE_TAGS = [
 
 async def _get_first_active_company() -> dict:
     """Return the first non-deleted company, raising 404 if none found."""
-    company = await db.Companies.find_one({"deleted_at": None})
+    company = await db.Companies.find_one({"deleted_at": None}, sort=[("created_at", 1)])
     if not company:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -160,7 +163,6 @@ async def patch_sms_config(
 ):
     """Partially update SMS configuration for the active company."""
     company = await _get_first_active_company()
-    company_id = str(company["_id"])
 
     existing = company.get("sms_config", {})
     defaults = SmsCompanyConfig().model_dump()
@@ -188,12 +190,10 @@ async def get_company_sms_config(
 ):
     """Get SMS configuration for a specific company."""
     try:
-        company = await db.Companies.find_one({
-            "_id": ObjectId(company_id),
-            "deleted_at": None
-        })
-    except Exception:
-        company = None
+        oid = ObjectId(company_id)
+    except InvalidId:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Formato de ID inválido")
+    company = await db.Companies.find_one({"_id": oid, "deleted_at": None})
 
     if not company:
         raise HTTPException(
@@ -205,20 +205,18 @@ async def get_company_sms_config(
     return SmsCompanyConfig(**sms_config) if sms_config else SmsCompanyConfig()
 
 
-@router.put("/companies/{company_id}/sms-config", response_model=SmsCompanyConfig)
-async def update_company_sms_config(
+@router.patch("/companies/{company_id}/sms-config", response_model=SmsCompanyConfig)
+async def patch_company_sms_config(
     company_id: str,
     config_update: SmsCompanyConfigUpdate,
     current_user: APIUser = Depends(PermissionChecker("manage_sms_config"))
 ):
-    """Replace (full update) SMS configuration for a specific company."""
+    """Partially update SMS configuration for a specific company."""
     try:
-        company = await db.Companies.find_one({
-            "_id": ObjectId(company_id),
-            "deleted_at": None
-        })
-    except Exception:
-        company = None
+        oid = ObjectId(company_id)
+    except InvalidId:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Formato de ID inválido")
+    company = await db.Companies.find_one({"_id": oid, "deleted_at": None})
 
     if not company:
         raise HTTPException(
@@ -234,25 +232,11 @@ async def update_company_sms_config(
     merged.update(update_data)
 
     await db.Companies.update_one(
-        {"_id": ObjectId(company_id)},
+        {"_id": oid},
         {"$set": {"sms_config": merged, "updated_at": datetime.now(timezone.utc)}}
     )
 
     return SmsCompanyConfig(**merged)
-
-
-@router.patch("/companies/{company_id}/sms-config", response_model=SmsCompanyConfig)
-async def patch_company_sms_config(
-    company_id: str,
-    config_update: SmsCompanyConfigUpdate,
-    current_user: APIUser = Depends(PermissionChecker("manage_sms_config"))
-):
-    """Partially update SMS configuration for a specific company."""
-    return await update_company_sms_config(
-        company_id=company_id,
-        config_update=config_update,
-        current_user=current_user,
-    )
 
 
 # ============================================================================
@@ -266,12 +250,10 @@ async def get_worker_sms_config(
 ):
     """Get SMS configuration for a worker."""
     try:
-        worker = await db.Workers.find_one({
-            "_id": ObjectId(worker_id),
-            "deleted_at": None
-        })
-    except Exception:
-        worker = None
+        oid = ObjectId(worker_id)
+    except InvalidId:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Formato de ID inválido")
+    worker = await db.Workers.find_one({"_id": oid, "deleted_at": None})
 
     if not worker:
         raise HTTPException(
@@ -285,44 +267,6 @@ async def get_worker_sms_config(
     return config
 
 
-@router.put("/workers/{worker_id}/sms-config", response_model=SmsWorkerConfig)
-async def update_worker_sms_config(
-    worker_id: str,
-    config_update: SmsWorkerConfigUpdate,
-    current_user: APIUser = Depends(PermissionChecker("manage_sms_config"))
-):
-    """Update SMS configuration for a worker (full replace)."""
-    try:
-        worker = await db.Workers.find_one({
-            "_id": ObjectId(worker_id),
-            "deleted_at": None
-        })
-    except Exception:
-        worker = None
-
-    if not worker:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Trabajador no encontrado"
-        )
-
-    existing = worker.get("sms_config", {})
-    defaults = SmsWorkerConfig().model_dump(exclude={"worker_id"})
-    merged = {**defaults, **existing}
-
-    update_data = config_update.model_dump(exclude_unset=True)
-    merged.update(update_data)
-
-    await db.Workers.update_one(
-        {"_id": ObjectId(worker_id)},
-        {"$set": {"sms_config": merged, "updated_at": datetime.now(timezone.utc)}}
-    )
-
-    result = SmsWorkerConfig(**merged)
-    result.worker_id = worker_id
-    return result
-
-
 @router.post("/workers/{worker_id}/sms/send", response_model=SmsSendResponse)
 async def send_worker_sms(
     worker_id: str,
@@ -333,12 +277,10 @@ async def send_worker_sms(
     from ..services.sms_service import sms_service
 
     try:
-        worker = await db.Workers.find_one({
-            "_id": ObjectId(worker_id),
-            "deleted_at": None
-        })
-    except Exception:
-        worker = None
+        oid = ObjectId(worker_id)
+    except InvalidId:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Formato de ID inválido")
+    worker = await db.Workers.find_one({"_id": oid, "deleted_at": None})
 
     if not worker:
         raise HTTPException(
@@ -352,6 +294,8 @@ async def send_worker_sms(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="El trabajador no tiene número de teléfono"
         )
+
+    phone_number = _validate_phone_number(phone_number)
 
     company_ids = worker.get("company_ids", [])
     company_id = company_ids[0] if company_ids else ""
@@ -378,11 +322,33 @@ async def patch_worker_sms_config(
     current_user: APIUser = Depends(PermissionChecker("manage_sms_config"))
 ):
     """Partially update SMS configuration for a worker."""
-    return await update_worker_sms_config(
-        worker_id=worker_id,
-        config_update=config_update,
-        current_user=current_user,
+    try:
+        oid = ObjectId(worker_id)
+    except InvalidId:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Formato de ID inválido")
+    worker = await db.Workers.find_one({"_id": oid, "deleted_at": None})
+
+    if not worker:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Trabajador no encontrado"
+        )
+
+    existing = worker.get("sms_config", {})
+    defaults = SmsWorkerConfig().model_dump(exclude={"worker_id"})
+    merged = {**defaults, **existing}
+
+    update_data = config_update.model_dump(exclude_unset=True)
+    merged.update(update_data)
+
+    await db.Workers.update_one(
+        {"_id": oid},
+        {"$set": {"sms_config": merged, "updated_at": datetime.now(timezone.utc)}}
     )
+
+    result = SmsWorkerConfig(**merged)
+    result.worker_id = worker_id
+    return result
 
 
 # ============================================================================
@@ -425,9 +391,15 @@ async def list_sms_history(
 
 @router.delete("/sms/history")
 async def clear_sms_history(
+    confirm: bool = Query(False, description="Must be true to confirm deletion"),
     current_user: APIUser = Depends(PermissionChecker("manage_sms_config"))
 ):
-    """Delete all SMS log entries."""
+    """Delete all SMS log entries. Requires confirm=true."""
+    if not confirm:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Set confirm=true to confirm deletion of all SMS history"
+        )
     result = await db.SmsLogs.delete_many({})
     return {"deleted": result.deleted_count}
 
@@ -439,9 +411,10 @@ async def get_sms_message(
 ):
     """Get a single SMS message by ID (frontend-friendly)."""
     try:
-        doc = await db.SmsLogs.find_one({"_id": ObjectId(message_id)})
-    except Exception:
-        doc = None
+        oid = ObjectId(message_id)
+    except InvalidId:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Formato de ID inválido")
+    doc = await db.SmsLogs.find_one({"_id": oid})
 
     if not doc:
         raise HTTPException(
@@ -502,9 +475,10 @@ async def get_sms_log(
 ):
     """Get a single SMS log entry by ID (admin/legacy)."""
     try:
-        doc = await db.SmsLogs.find_one({"_id": ObjectId(log_id)})
-    except Exception:
-        doc = None
+        oid = ObjectId(log_id)
+    except InvalidId:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Formato de ID inválido")
+    doc = await db.SmsLogs.find_one({"_id": oid})
 
     if not doc:
         raise HTTPException(
@@ -585,71 +559,97 @@ async def get_sms_dashboard(
     now = datetime.now(timezone.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
-    # Week start (Monday)
+    # Week start (Monday) — safe subtraction avoids day-of-month underflow
     week_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    week_start = week_start.replace(day=week_start.day - week_start.weekday())
+    week_start = week_start - timedelta(days=week_start.weekday())
 
     # Month start
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
-    total_sent_today = await db.SmsLogs.count_documents({
-        "status": {"$in": ["sent", "delivered"]},
-        "created_at": {"$gte": today_start}
-    })
-    total_sent_this_week = await db.SmsLogs.count_documents({
-        "status": {"$in": ["sent", "delivered"]},
-        "created_at": {"$gte": week_start}
-    })
-    total_sent_this_month = await db.SmsLogs.count_documents({
-        "status": {"$in": ["sent", "delivered"]},
-        "created_at": {"$gte": month_start}
-    })
-    total_failed_this_month = await db.SmsLogs.count_documents({
-        "status": "failed",
-        "created_at": {"$gte": month_start}
-    })
+    pipeline = [
+        {"$match": {"created_at": {"$gte": month_start}}},
+        {"$facet": {
+            "by_company": [
+                {"$group": {
+                    "_id": "$company_id",
+                    "sent_today": {"$sum": {"$cond": [
+                        {"$and": [
+                            {"$gte": ["$created_at", today_start]},
+                            {"$in": ["$status", ["sent", "delivered"]]}
+                        ]}, 1, 0
+                    ]}},
+                    "sent_this_week": {"$sum": {"$cond": [
+                        {"$and": [
+                            {"$gte": ["$created_at", week_start]},
+                            {"$in": ["$status", ["sent", "delivered"]]}
+                        ]}, 1, 0
+                    ]}},
+                    "sent_this_month": {"$sum": {"$cond": [
+                        {"$in": ["$status", ["sent", "delivered"]]},
+                        1, 0
+                    ]}},
+                    "failed_this_month": {"$sum": {"$cond": [
+                        {"$eq": ["$status", "failed"]},
+                        1, 0
+                    ]}}
+                }}
+            ],
+            "totals": [
+                {"$group": {
+                    "_id": None,
+                    "sent_today": {"$sum": {"$cond": [
+                        {"$and": [
+                            {"$gte": ["$created_at", today_start]},
+                            {"$in": ["$status", ["sent", "delivered"]]}
+                        ]}, 1, 0
+                    ]}},
+                    "sent_this_week": {"$sum": {"$cond": [
+                        {"$and": [
+                            {"$gte": ["$created_at", week_start]},
+                            {"$in": ["$status", ["sent", "delivered"]]}
+                        ]}, 1, 0
+                    ]}},
+                    "sent_this_month": {"$sum": {"$cond": [
+                        {"$in": ["$status", ["sent", "delivered"]]},
+                        1, 0
+                    ]}},
+                    "failed_this_month": {"$sum": {"$cond": [
+                        {"$eq": ["$status", "failed"]},
+                        1, 0
+                    ]}}
+                }}
+            ]
+        }}
+    ]
 
+    agg_result = await db.SmsLogs.aggregate(pipeline).to_list(1)
+    facets = agg_result[0] if agg_result else {"by_company": [], "totals": []}
+
+    totals = facets["totals"][0] if facets["totals"] else {
+        "sent_today": 0, "sent_this_week": 0, "sent_this_month": 0, "failed_this_month": 0
+    }
+
+    # Build company stats — need company names
+    company_stats_map = {item["_id"]: item for item in facets["by_company"]}
+    companies_cursor = db.Companies.find({"deleted_at": None}, {"_id": 1, "name": 1})
     company_stats: list[SmsDashboardCompanyStats] = []
-
-    async for company in db.Companies.find({"deleted_at": None}):
-        company_id = str(company["_id"])
-        company_name = company.get("name", "")
-
-        sent_today = await db.SmsLogs.count_documents({
-            "company_id": company_id,
-            "status": {"$in": ["sent", "delivered"]},
-            "created_at": {"$gte": today_start}
-        })
-        sent_this_week = await db.SmsLogs.count_documents({
-            "company_id": company_id,
-            "status": {"$in": ["sent", "delivered"]},
-            "created_at": {"$gte": week_start}
-        })
-        sent_this_month = await db.SmsLogs.count_documents({
-            "company_id": company_id,
-            "status": {"$in": ["sent", "delivered"]},
-            "created_at": {"$gte": month_start}
-        })
-        failed_this_month = await db.SmsLogs.count_documents({
-            "company_id": company_id,
-            "status": "failed",
-            "created_at": {"$gte": month_start}
-        })
-
+    async for company in companies_cursor:
+        cid = str(company["_id"])
+        stats = company_stats_map.get(cid, {})
         company_stats.append(SmsDashboardCompanyStats(
-            company_id=company_id,
-            company_name=company_name,
-            sent_today=sent_today,
-            sent_this_week=sent_this_week,
-            sent_this_month=sent_this_month,
-            failed_this_month=failed_this_month
+            company_id=cid,
+            company_name=company.get("name", ""),
+            sent_today=stats.get("sent_today", 0),
+            sent_this_week=stats.get("sent_this_week", 0),
+            sent_this_month=stats.get("sent_this_month", 0),
+            failed_this_month=stats.get("failed_this_month", 0),
         ))
 
     return SmsDashboardResponse(
-        total_sent_today=total_sent_today,
-        total_sent_this_week=total_sent_this_week,
-        total_sent_this_month=total_sent_this_month,
-        total_failed_this_month=total_failed_this_month,
+        total_sent_today=totals["sent_today"],
+        total_sent_this_week=totals["sent_this_week"],
+        total_sent_this_month=totals["sent_this_month"],
+        total_failed_this_month=totals["failed_this_month"],
         unlimited_balance=sms_service.is_unlimited_balance(),
         companies=company_stats,
         provider_enabled=sms_service.is_enabled(),

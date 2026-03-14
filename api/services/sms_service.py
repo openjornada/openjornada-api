@@ -15,9 +15,15 @@ from typing import Optional
 import httpx
 
 from ..database import db
+from ..models.sms import DEFAULT_SMS_TEMPLATE
 from ..utils.encryption import credential_encryption
 
 logger = logging.getLogger(__name__)
+
+
+def _mask_phone(phone: str) -> str:
+    """Mask phone number for logging, showing only last 4 digits."""
+    return f"***{phone[-4:]}" if len(phone) >= 4 else "***"
 
 
 # ============================================================================
@@ -35,6 +41,10 @@ class SmsProvider(ABC):
         Returns:
             Tuple of (success, provider_message_id, error_message)
         """
+
+    @abstractmethod
+    async def close(self) -> None:
+        """Close any underlying HTTP connections."""
 
 
 # ============================================================================
@@ -61,6 +71,11 @@ class LabsMobileProvider(SmsProvider):
         """
         self._api_token = api_token
         self._sender_id = sender_id
+        self._client = httpx.AsyncClient(timeout=15.0)
+
+    async def close(self) -> None:
+        """Close the underlying HTTP client."""
+        await self._client.aclose()
 
     async def send_sms(self, phone_number: str, message: str) -> tuple[bool, Optional[str], Optional[str]]:
         """Send SMS via LabsMobile REST API."""
@@ -75,33 +90,32 @@ class LabsMobileProvider(SmsProvider):
         }
 
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                response = await client.post(
-                    self._API_ENDPOINT,
-                    json=payload,
-                    headers=headers
-                )
-                response.raise_for_status()
-                data = response.json()
+            response = await self._client.post(
+                self._API_ENDPOINT,
+                json=payload,
+                headers=headers
+            )
+            response.raise_for_status()
+            data = response.json()
 
-                # LabsMobile returns {"code": "0", "message": "..."} on success
-                code = str(data.get("code", ""))
-                if code == "0":
-                    message_id = data.get("subid") or data.get("message", "")
-                    logger.info(f"[SMS] LabsMobile sent to {phone_number}, subid={message_id}")
-                    return True, message_id, None
-                else:
-                    error_msg = data.get("message", f"Provider error code {code}")
-                    logger.warning(f"[SMS] LabsMobile rejected send to {phone_number}: {error_msg}")
-                    return False, None, error_msg
+            # LabsMobile returns {"code": "0", "message": "..."} on success
+            code = str(data.get("code", ""))
+            if code == "0":
+                message_id = data.get("subid") or data.get("message", "")
+                logger.info(f"[SMS] LabsMobile sent to {_mask_phone(phone_number)}, subid={message_id}")
+                return True, message_id, None
+            else:
+                error_msg = data.get("message", f"Provider error code {code}")
+                logger.warning(f"[SMS] LabsMobile rejected send to {_mask_phone(phone_number)}: {error_msg}")
+                return False, None, error_msg
 
         except httpx.HTTPStatusError as e:
             error_msg = f"HTTP {e.response.status_code}: {e.response.text[:200]}"
-            logger.error(f"[SMS] LabsMobile HTTP error for {phone_number}: {error_msg}")
+            logger.error(f"[SMS] LabsMobile HTTP error for {_mask_phone(phone_number)}: {error_msg}")
             return False, None, error_msg
         except Exception as e:
             error_msg = f"{type(e).__name__}: {e}"
-            logger.error(f"[SMS] LabsMobile unexpected error for {phone_number}: {error_msg}")
+            logger.error(f"[SMS] LabsMobile unexpected error for {_mask_phone(phone_number)}: {error_msg}")
             return False, None, error_msg
 
 
@@ -170,8 +184,14 @@ class SmsService:
         self._enabled = False
         self._provider = None
 
+    async def close(self):
+        """Close the underlying provider HTTP client, if any."""
+        if self._provider is not None:
+            await self._provider.close()
+
     async def reload(self):
         """Reload provider configuration (call after settings update)."""
+        await self.close()
         self._provider = None
         self._enabled = False
         await self.initialize()
@@ -182,8 +202,6 @@ class SmsService:
     def is_unlimited_balance(self) -> bool:
         return self._unlimited_balance
 
-    _DEFAULT_SMS_TEMPLATE = "OpenJornada: Hola {%worker_name%}, llevas {%hours_open%}h con tu jornada abierta en {%company_name%}. Si ya terminaste, no olvides registrar tu salida. Recordatorio {%reminder_number%}."
-
     async def _build_reminder_message(
         self,
         worker_name: str,
@@ -192,7 +210,7 @@ class SmsService:
         reminder_number: int
     ) -> str:
         """Build the SMS text from the DB template or use default."""
-        template = self._DEFAULT_SMS_TEMPLATE
+        template = DEFAULT_SMS_TEMPLATE
         try:
             settings = await db.Settings.find_one()
             if settings and "sms_reminder_template" in settings:
@@ -234,7 +252,7 @@ class SmsService:
         )
 
         now = datetime.now(timezone.utc)
-        status = "sent" if success else "failed"
+        sms_status = "sent" if success else "failed"
 
         log_entry = {
             "worker_id": worker_id,
@@ -243,7 +261,7 @@ class SmsService:
             "time_record_entry_id": "",
             "message_type": "custom",
             "reminder_number": 0,
-            "status": status,
+            "status": sms_status,
             "provider": "labsmobile",
             "provider_message_id": provider_message_id,
             "error_message": error_message,
@@ -302,7 +320,7 @@ class SmsService:
         )
 
         now = datetime.now(timezone.utc)
-        status = "sent" if success else "failed"
+        sms_status = "sent" if success else "failed"
 
         # 4. Record in SmsLogs — denormalize worker fields for history display
         log_entry = {
@@ -312,7 +330,7 @@ class SmsService:
             "time_record_entry_id": time_record_entry_id,
             "message_type": "shift_reminder",
             "reminder_number": reminder_number,
-            "status": status,
+            "status": sms_status,
             "provider": "labsmobile",
             "provider_message_id": provider_message_id,
             "error_message": error_message,
