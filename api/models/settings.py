@@ -1,6 +1,8 @@
 from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, Literal
 
+from .sms import SmsProviderConfigInput, SmsProviderConfigStored, SmsProviderConfigResponse
+
 
 # ============================================================================
 # Backup Configuration Models
@@ -107,13 +109,16 @@ class SettingsBase(BaseModel):
 class SettingsUpdate(BaseModel):
     contact_email: Optional[EmailStr] = None
     backup_config: Optional[BackupConfigInput] = None
+    sms_provider_config: Optional[SmsProviderConfigInput] = None
 
 
 class SettingsInDB(SettingsBase):
     id: str  # MongoDB _id converted to string
     backup_config: Optional[BackupConfigStored] = None
+    sms_provider_config: Optional[SmsProviderConfigStored] = None
 
 
 class SettingsResponse(SettingsBase):
     id: str
     backup_config: Optional[BackupConfigResponse] = None
+    sms_provider_config: Optional[SmsProviderConfigResponse] = None

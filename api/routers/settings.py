@@ -5,6 +5,7 @@ from ..models.settings import (
     BackupConfigInput, BackupConfigStored, BackupSchedule,
     S3ConfigStored, SFTPConfigStored, LocalConfig
 )
+from ..models.sms import SmsProviderConfigInput, SmsProviderConfigResponse
 from ..models.auth import APIUser
 from ..database import db, convert_id
 from ..auth.permissions import PermissionChecker
@@ -49,14 +50,28 @@ def _build_backup_config_response(backup_config: dict | None) -> BackupConfigRes
     return response
 
 
+def _build_sms_provider_config_response(sms_config: dict | None) -> SmsProviderConfigResponse | None:
+    """Build SMS provider config response from stored config (hides credentials)."""
+    if not sms_config:
+        return None
+    return SmsProviderConfigResponse(
+        provider=sms_config.get("provider", "labsmobile"),
+        sender_id=sms_config.get("sender_id", "OpenJornada"),
+        enabled=sms_config.get("enabled", False),
+        configured=bool(sms_config.get("api_token_encrypted"))
+    )
+
+
 def _build_settings_response(settings: dict) -> SettingsResponse:
     """Build settings response from database document."""
     backup_config_response = _build_backup_config_response(settings.get("backup_config"))
+    sms_provider_response = _build_sms_provider_config_response(settings.get("sms_provider_config"))
 
     return SettingsResponse(
         id=str(settings["_id"]),
         contact_email=settings["contact_email"],
-        backup_config=backup_config_response
+        backup_config=backup_config_response,
+        sms_provider_config=sms_provider_response
     )
 
 
@@ -113,6 +128,11 @@ async def update_settings(
         backup_stored = _process_backup_config(backup_input, settings.get("backup_config"))
         update_data["backup_config"] = backup_stored
 
+    # Handle sms_provider_config
+    if settings_update.sms_provider_config is not None:
+        sms_stored = _process_sms_provider_config(settings_update.sms_provider_config, settings.get("sms_provider_config"))
+        update_data["sms_provider_config"] = sms_stored
+
     if not update_data:
         # No fields to update
         return _build_settings_response(settings)
@@ -126,6 +146,11 @@ async def update_settings(
     # Reload scheduler if backup config changed
     if "backup_config" in update_data:
         await scheduler_service.reload_schedule()
+
+    # Reload SMS service if provider config changed
+    if "sms_provider_config" in update_data:
+        from ..services.sms_service import sms_service
+        await sms_service.reload()
 
     # Return updated settings
     updated_settings = await db.Settings.find_one({"_id": settings["_id"]})
@@ -186,3 +211,20 @@ def _process_backup_config(backup_input: BackupConfigInput, existing_config: dic
         stored["local_config"] = {"path": "/app/backups"}
 
     return stored
+
+
+def _process_sms_provider_config(sms_input: SmsProviderConfigInput, existing_config: dict | None = None) -> dict:
+    """
+    Process SMS provider config input and encrypt the API token.
+    Preserves existing encrypted credentials if api_token is not provided.
+    """
+    result = {
+        "provider": sms_input.provider,
+        "sender_id": sms_input.sender_id,
+        "enabled": sms_input.enabled
+    }
+    if sms_input.api_token:
+        result["api_token_encrypted"] = credential_encryption.encrypt(sms_input.api_token)
+    elif existing_config and existing_config.get("api_token_encrypted"):
+        result["api_token_encrypted"] = existing_config["api_token_encrypted"]
+    return result

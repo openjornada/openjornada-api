@@ -64,6 +64,15 @@ async def init_db():
             partialFilterExpression={"status": "pending"}
         )
 
+        # Create indexes for SmsLogs
+        await db.SmsLogs.create_index("worker_id")
+        await db.SmsLogs.create_index("company_id")
+        await db.SmsLogs.create_index("time_record_entry_id")
+        await db.SmsLogs.create_index("status")
+        await db.SmsLogs.create_index("created_at")
+        await db.SmsLogs.create_index([("company_id", 1), ("created_at", 1)])
+        await db.SmsLogs.create_index([("worker_id", 1), ("time_record_entry_id", 1), ("reminder_number", 1)])
+
     except Exception as e:
         print(f"Error initializing database: {e}")
 

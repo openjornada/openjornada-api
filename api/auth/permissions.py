@@ -32,7 +32,10 @@ ROLE_PERMISSIONS = {
         "manage_backups",
         "view_reports",
         "export_reports",
-        "manage_inspection"
+        "manage_inspection",
+        "manage_sms_config",
+        "view_sms_logs",
+        "view_sms_dashboard"
     ],
     "inspector": [
         "view_reports",

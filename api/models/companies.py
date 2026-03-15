@@ -2,6 +2,9 @@ from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime
 
+from .sms import SmsCompanyConfig
+
+
 class CompanyBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
 
@@ -27,3 +30,4 @@ class CompanyResponse(CompanyBase):
     updated_at: Optional[datetime] = None
     deleted_at: Optional[datetime] = None
     deleted_by: Optional[str] = None
+    sms_config: Optional[SmsCompanyConfig] = None

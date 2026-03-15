@@ -6,4 +6,12 @@ a running MongoDB instance or a live FastAPI application.  This conftest
 intentionally avoids importing api.main so that missing infrastructure
 (MongoDB, APScheduler, etc.) does not prevent the unit test suite from
 running.
+
+Run unit tests in isolation with:
+
+    python -m pytest tests/unit/ --noconftest -v
+
+The --noconftest flag is required on Python 3.9 because the parent
+tests/conftest.py imports api.main, which uses the X|Y union syntax
+(PEP 604) that is only valid on Python 3.10+.
 """
