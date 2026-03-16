@@ -20,6 +20,7 @@ Backend API para el sistema OpenJornada, construido con FastAPI y MongoDB.
 - **Acceso Inspección de Trabajo**: Endpoints para acceso conforme al art. 34.9 ET y RD-Ley 8/2019
 - **Verificación de Integridad**: Hash SHA-256 para registros y exportaciones
 - **Firma Mensual de Trabajadores**: Firma digital de registros mensuales por el trabajador
+- **Recordatorios SMS**: Envío automático de SMS a trabajadores que olvidan fichar la salida (proveedor LabsMobile)
 
 ## 📋 Requisitos
 
@@ -93,6 +94,13 @@ SMTP_PASSWORD=your_password
 SMTP_FROM_EMAIL=noreply@example.com
 SMTP_FROM_NAME=OpenJornada
 EMAIL_APP_NAME=OpenJornada
+
+# SMS Configuration (LabsMobile)
+# SMS_ENABLED=false
+# SMS_PROVIDER=labsmobile
+# SMS_LABSMOBILE_API_TOKEN=  # Base64(username:api_key)
+# SMS_SENDER_ID=OpenJornada
+# SMS_UNLIMITED_BALANCE=0
 ```
 
 ## 👥 Gestión de Usuarios API
@@ -144,14 +152,17 @@ openjornada-api/
 │   ├── auth/              # Autenticación y permisos
 │   ├── models/            # Modelos Pydantic
 │   │   ├── reports.py     # Modelos de informes y exportación
+│   │   ├── sms.py          # Modelos SMS (logs, config, plantillas)
 │   │   └── ...
 │   ├── routers/           # Endpoints de la API
 │   │   ├── reports.py     # Informes, exportación e Inspección de Trabajo
+│   │   ├── sms.py          # Endpoints SMS
 │   │   └── ...
 │   ├── services/          # Servicios
 │   │   ├── report_service.py     # Generación de informes mensuales y horas extra
 │   │   ├── export_service.py     # Exportación a CSV, XLSX y PDF
 │   │   ├── integrity_service.py  # Verificación de integridad SHA-256
+│   │   ├── sms_service.py        # Servicio SMS (LabsMobile)
 │   │   └── ...
 │   ├── database.py        # Configuración de MongoDB
 │   ├── main.py           # Punto de entrada de la aplicación
@@ -161,7 +172,9 @@ openjornada-api/
 ├── scripts/              # Scripts de verificación y utilidad
 ├── tests/                # Tests
 │   └── unit/
-│       └── test_reports.py # Tests unitarios de informes (68 tests)
+│       ├── test_reports.py       # Tests unitarios de informes (68 tests)
+│       ├── test_sms_service.py   # Tests del servicio SMS (24 tests)
+│       └── test_scheduler_sms.py # Tests del scheduler SMS (17 tests)
 ├── requirements.txt      # Dependencias Python
 ├── docker-compose.yml    # Configuración Docker local
 └── README.md            # Este archivo
@@ -188,6 +201,7 @@ openjornada-api/
 - view_settings, update_settings
 - view_backups, manage_backups
 - view_reports, export_reports, manage_inspection
+- manage_sms_config, view_sms_logs, view_sms_dashboard
 
 **Inspector**:
 - view_reports, export_reports, view_companies
@@ -236,6 +250,12 @@ Configuración global:
 - contact_email: Email de contacto para soporte
 - webapp_url: URL de la aplicación web
 - backup_config: Configuración de backups automáticos
+
+### SmsLogs
+Registro de SMS enviados:
+- Campos: worker_id, company_id, phone_number, message, status, provider_message_id, cost, reminder_number
+- Estados: pending, sent, delivered, failed
+- Índices: (company_id, created_at), (worker_id, time_record_entry_id, reminder_number)
 
 ### Backups
 Registros de copias de seguridad:
@@ -323,6 +343,18 @@ Registros de copias de seguridad:
 - `POST /api/backups/test-connection` - Probar conexión storage
 - `GET /api/backups/schedule/status` - Estado del scheduler
 
+### SMS (Admin only)
+- `GET /api/sms/credits` - Créditos y estado del proveedor SMS
+- `GET /api/sms/config` - Obtener configuración SMS de la empresa
+- `PATCH /api/sms/config` - Actualizar configuración SMS
+- `GET /api/sms/template` - Obtener plantilla de mensaje SMS
+- `PUT /api/sms/template` - Actualizar plantilla
+- `POST /api/sms/template/reset` - Restaurar plantilla por defecto
+- `GET /api/sms/stats` - Estadísticas de envío
+- `GET /api/sms/history` - Historial de SMS enviados
+- `DELETE /api/sms/history` - Limpiar historial
+- `POST /api/workers/{id}/sms/send` - Enviar SMS manual a trabajador
+
 ## 💾 Sistema de Backups
 
 La API incluye un sistema completo de copias de seguridad de MongoDB:
@@ -370,6 +402,29 @@ sudo chown 1000:1000 /opt/openjornada/backups
 ### Nota sobre Réplicas
 
 Para backups locales, usar `API_REPLICAS=1` para evitar conflictos. Con S3/SFTP se pueden usar múltiples réplicas.
+
+## 📱 Sistema de Recordatorios SMS
+
+La API incluye un sistema de recordatorios por SMS para trabajadores que olvidan registrar la salida:
+
+### Características
+
+- **Envío automático**: El scheduler revisa jornadas abiertas cada 5 minutos
+- **Proveedor LabsMobile**: Integración via API REST con autenticación HTTP Basic
+- **Plantilla personalizable**: Etiquetas dinámicas ({%worker_name%}, {%company_name%}, {%hours_open%}, {%reminder_number%})
+- **Horario activo configurable**: Solo envía dentro del horario definido (por defecto 08:00-23:00)
+- **Control de frecuencia**: Primer recordatorio, intervalo entre recordatorios y máximo por día
+- **Opt-out por trabajador**: Cada trabajador puede desactivar los SMS desde su perfil
+- **Credenciales encriptadas**: Fernet encryption usando SECRET_KEY
+- **Balance ilimitado**: Modo desarrollo sin consumir créditos reales
+
+### Configuración
+
+1. Configurar variables de entorno SMS (ver sección Variables de Entorno)
+2. Ir a **Admin → Recordatorios SMS**
+3. Configurar horario activo y frecuencia de recordatorios
+4. Personalizar la plantilla del mensaje
+5. Activar el servicio
 
 ## 📊 Sistema de Informes y Exportación
 
@@ -440,6 +495,8 @@ pytest tests/integration/ -v
 | Módulo | Tests | Descripción |
 |--------|-------|-------------|
 | `test_reports.py` | 68 | IntegrityService, modelos de informes, ReportService (process_day_records, group_records_by_day), ExportService (CSV/XLSX/PDF), permisos |
+| `test_sms_service.py` | 24 | SmsService: inicialización (env, DB, fallback), envío (disabled, sin balance, éxito, fallo), reload |
+| `test_scheduler_sms.py` | 17 | Scheduler SMS: horario activo, intervalos, máx recordatorios, opt-out, sin teléfono, umbrales |
 
 ```bash
 # Ejecutar tests unitarios
