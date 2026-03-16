@@ -1,3 +1,5 @@
+> 🇬🇧 [Read in English](README.en.md)
+
 # OpenJornada API
 
 Backend API para el sistema OpenJornada, construido con FastAPI y MongoDB.
