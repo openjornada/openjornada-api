@@ -8,7 +8,9 @@ from ..models.change_requests import (
     ChangeRequestCreate,
     ChangeRequestUpdate,
     ChangeRequestResponse,
-    ChangeRequestStatus
+    ChangeRequestStatus,
+    WorkerChangeRequestsRequest,
+    WorkerChangeRequestResponse,
 )
 from ..models.auth import APIUser
 from ..database import db, convert_id
@@ -515,3 +517,91 @@ async def update_change_request(
     # 4. Retrieve and return updated change request
     updated_cr = await db.ChangeRequests.find_one({"_id": cr_obj_id})
     return ChangeRequestResponse(**prepare_change_request_response(updated_cr))
+
+
+# ---------------------------------------------------------------------------
+# Worker endpoints (email + password authentication)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/worker/history",
+    response_model=List[WorkerChangeRequestResponse],
+    summary="Historial de solicitudes de cambio del trabajador",
+)
+async def get_worker_change_request_history(
+    request: WorkerChangeRequestsRequest,
+) -> List[WorkerChangeRequestResponse]:
+    """
+    Permite a un trabajador consultar su historial de solicitudes de cambio.
+
+    La autenticación se realiza con email y contraseña (sin JWT). El trabajador
+    sólo puede consultar solicitudes de empresas a las que pertenece.
+
+    El campo ``admin_internal_notes`` nunca se incluye en la respuesta.
+    """
+    # 1. Authenticate worker
+    worker = await db.Workers.find_one({"email": request.email, "deleted_at": None})
+    if not worker or not verify_password(request.password, worker["hashed_password"]):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Credenciales incorrectas",
+        )
+
+    worker_id = str(worker["_id"])
+
+    # 2. If company_id provided, verify worker belongs to it
+    if request.company_id is not None:
+        worker_company_ids = [str(cid) for cid in worker.get("company_ids", [])]
+        if request.company_id not in worker_company_ids:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="No tienes permisos para acceder a los datos de esta empresa",
+            )
+
+    # 3. Build query
+    query: dict = {"worker_id": worker_id}
+    if request.company_id is not None:
+        query["company_id"] = request.company_id
+    if request.status_filter is not None:
+        query["status"] = request.status_filter
+
+    # 4. Fetch, sort desc by created_at, limit
+    results: List[WorkerChangeRequestResponse] = []
+    async for cr in db.ChangeRequests.find(query).sort("created_at", -1).limit(request.limit):
+        data = convert_id(cr)
+
+        def _dt_to_iso(val) -> Optional[str]:
+            if val is None:
+                return None
+            if isinstance(val, datetime):
+                if val.tzinfo is None:
+                    val = val.replace(tzinfo=dt_timezone.utc)
+                return val.isoformat()
+            return str(val)
+
+        # date field is stored as datetime (start-of-day); format as ISO date string
+        date_val = data.get("date")
+        if isinstance(date_val, datetime):
+            date_str = date_val.date().isoformat()
+        else:
+            date_str = str(date_val) if date_val is not None else ""
+
+        results.append(WorkerChangeRequestResponse(
+            id=data["id"],
+            date=date_str,
+            time_record_id=data.get("time_record_id", ""),
+            original_timestamp=_dt_to_iso(data.get("original_timestamp")) or "",
+            original_type=data.get("original_type", ""),
+            company_id=data.get("company_id", ""),
+            company_name=data.get("company_name", ""),
+            new_timestamp=_dt_to_iso(data.get("new_timestamp")) or "",
+            reason=data.get("reason", ""),
+            status=data.get("status", ""),
+            created_at=_dt_to_iso(data.get("created_at")) or "",
+            updated_at=_dt_to_iso(data.get("updated_at")) or "",
+            reviewed_at=_dt_to_iso(data.get("reviewed_at")),
+            admin_public_comment=data.get("admin_public_comment"),
+        ))
+
+    return results

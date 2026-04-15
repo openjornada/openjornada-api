@@ -17,6 +17,7 @@ Exposes two families of endpoints:
     POST /reports/worker/signatures/status Last 12 months signature status
 """
 
+import hashlib
 import io
 import csv
 import logging
@@ -38,6 +39,7 @@ from ..models.reports import (
     OvertimeReport,
     RecordIntegrity,
     SignatureStatusResponse,
+    WorkerExportRequest,
     WorkerMonthlySummary,
     WorkerReportRequest,
 )
@@ -599,3 +601,72 @@ async def get_worker_signature_status(
     )
 
     return SignatureStatusResponse(pending=pending, signed=signed)
+
+
+@router.post(
+    "/reports/worker/monthly/export",
+    summary="Exportar informe mensual del propio trabajador (CSV / PDF)",
+)
+async def export_worker_own_monthly_report(
+    request: WorkerExportRequest,
+) -> StreamingResponse:
+    """
+    Permite a un trabajador exportar su propio resumen mensual de jornada.
+
+    La autenticación se realiza con email y contraseña (sin JWT). El trabajador
+    sólo puede exportar datos de empresas a las que pertenece.
+
+    Cabeceros de respuesta:
+
+    - ``X-Report-Hash``: SHA-256 del contenido del fichero (para auditoría).
+    - ``X-Report-Generated``: Timestamp ISO 8601 de generación.
+    """
+    worker = await _authenticate_worker(request.email, request.password)
+    _verify_worker_company_access(worker, request.company_id)
+
+    worker_id = str(worker["_id"])
+    logger.info(
+        "Worker self-export requested: worker=%s company=%s year=%d month=%d format=%s",
+        worker_id, request.company_id, request.year, request.month, request.format,
+    )
+
+    summary = await ReportService().get_worker_monthly_summary(
+        company_id=request.company_id,
+        worker_id=worker_id,
+        year=request.year,
+        month=request.month,
+        timezone=request.timezone,
+    )
+
+    export_service = ExportService()
+    if request.format == "csv":
+        buf: io.BytesIO = await export_service.export_monthly_csv(summary, timezone=request.timezone)
+        media_type = "text/csv"
+        ext = "csv"
+    else:
+        buf = await export_service.export_monthly_pdf(summary, timezone=request.timezone)
+        media_type = "application/pdf"
+        ext = "pdf"
+
+    raw_bytes = buf.getvalue()
+    report_hash = hashlib.sha256(raw_bytes).hexdigest()
+    buf.seek(0)
+
+    worker_name = f"{worker.get('first_name', '')}_{worker.get('last_name', '')}".strip("_").replace(" ", "_")
+    filename = f"informe_{worker_name}_{request.year}-{request.month:02d}.{ext}"
+    generated_at = datetime.now(dt_timezone.utc).isoformat()
+
+    logger.info(
+        "Worker self-export generated: file=%s hash=%s worker=%s",
+        filename, report_hash, worker_id,
+    )
+
+    return StreamingResponse(
+        content=buf,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Report-Generated": generated_at,
+            "X-Report-Hash": report_hash,
+        },
+    )

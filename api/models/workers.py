@@ -84,3 +84,24 @@ class WorkerCompaniesRequest(BaseModel):
     """Request model for getting worker's companies"""
     email: EmailStr
     password: str
+
+
+class WorkerMeRequest(BaseModel):
+    """Request body for a worker to retrieve their own profile."""
+
+    email: EmailStr
+    password: str
+
+
+class WorkerMeResponse(BaseModel):
+    """Worker self-profile response — no sensitive fields."""
+
+    id: str
+    first_name: str
+    last_name: str
+    email: str
+    phone_number: str
+    id_number: str
+    default_timezone: str
+    company_ids: List[str]
+    company_names: List[str]

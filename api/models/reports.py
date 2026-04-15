@@ -179,3 +179,15 @@ class RecordIntegrity(BaseModel):
     integrity_hash: str    # Hash stored in the database at creation time
     computed_hash: str     # Hash recomputed from current record fields
     verified: bool         # True when integrity_hash == computed_hash
+
+
+class WorkerExportRequest(BaseModel):
+    """Request body for a worker to export their own monthly report."""
+
+    email: EmailStr
+    password: str
+    company_id: str
+    year: int = Field(..., ge=2020, le=2035)
+    month: int = Field(..., ge=1, le=12)
+    format: Literal["pdf", "csv"] = "pdf"
+    timezone: str = "Europe/Madrid"

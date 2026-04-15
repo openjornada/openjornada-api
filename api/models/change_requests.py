@@ -97,3 +97,32 @@ class ChangeRequestResponse(BaseModel):
 
     # Validaciones (solo en GET /change-requests/{id})
     validation_errors: Optional[List[str]] = None
+
+
+class WorkerChangeRequestsRequest(BaseModel):
+    """Request body for a worker to retrieve their own change request history."""
+
+    email: EmailStr
+    password: str
+    company_id: Optional[str] = None
+    status_filter: Optional[str] = None  # "pending" | "accepted" | "rejected"
+    limit: int = Field(50, ge=1, le=100)
+
+
+class WorkerChangeRequestResponse(BaseModel):
+    """Change request response for the worker — excludes admin_internal_notes."""
+
+    id: str
+    date: str
+    time_record_id: str
+    original_timestamp: str
+    original_type: str
+    company_id: str
+    company_name: str
+    new_timestamp: str
+    reason: str
+    status: str
+    created_at: str
+    updated_at: str
+    reviewed_at: Optional[str] = None
+    admin_public_comment: Optional[str] = None

@@ -13,7 +13,9 @@ from ..models.workers import (
     ChangePasswordRequest,
     ForgotPasswordRequest,
     ResetPasswordRequest,
-    WorkerCompaniesRequest
+    WorkerCompaniesRequest,
+    WorkerMeRequest,
+    WorkerMeResponse,
 )
 from ..models.auth import APIUser
 from ..database import db, convert_id
@@ -658,3 +660,51 @@ async def get_worker_companies(request: WorkerCompaniesRequest):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error al obtener las empresas"
         )
+
+
+@router.post("/workers/me", response_model=WorkerMeResponse, status_code=status.HTTP_200_OK)
+async def get_worker_me(request: WorkerMeRequest) -> WorkerMeResponse:
+    """
+    Devuelve el perfil del propio trabajador.
+
+    La autenticación se realiza con email y contraseña (sin JWT).
+    Los campos sensibles (hashed_password, reset_token, etc.) nunca se incluyen.
+    """
+    logger.info(f"[WORKER-ME] Request received for email: {request.email}")
+
+    worker = await db.Workers.find_one({"email": request.email, "deleted_at": None})
+    if not worker or not verify_password(request.password, worker.get("hashed_password", "")):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Credenciales inválidas",
+        )
+
+    worker_id = str(worker["_id"])
+    company_ids = [str(cid) for cid in worker.get("company_ids", [])]
+
+    # Resolve company names (active companies only)
+    company_names: List[str] = []
+    for company_id_str in company_ids:
+        try:
+            company = await db.Companies.find_one({
+                "_id": ObjectId(company_id_str),
+                "deleted_at": None,
+            })
+            company_names.append(company["name"] if company else "")
+        except Exception as e:
+            logger.warning(f"[WORKER-ME] Error loading company {company_id_str}: {e}")
+            company_names.append("")
+
+    logger.info(f"[WORKER-ME] Returning profile for worker: {worker_id}")
+
+    return WorkerMeResponse(
+        id=worker_id,
+        first_name=worker.get("first_name", ""),
+        last_name=worker.get("last_name", ""),
+        email=worker["email"],
+        phone_number=worker.get("phone_number", ""),
+        id_number=worker.get("id_number", ""),
+        default_timezone=worker.get("default_timezone", "UTC"),
+        company_ids=company_ids,
+        company_names=company_names,
+    )
