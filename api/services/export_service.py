@@ -30,6 +30,7 @@ from reportlab.platypus import (
 from ..models.reports import (
     CompanyMonthlySummary,
     DailyWorkSummary,
+    ModificationEntry,
     WorkerMonthlySummary,
 )
 
@@ -88,6 +89,7 @@ class ExportService:
             "Fecha", "DNI", "Nombre", "Empresa",
             "Entrada", "Salida", "Horas Trabajadas",
             "Pausas (min)", "Horas Extra", "Modificado",
+            "Registros Modificados", "Detalle Modificaciones",
         ]
         text_buffer.write(";".join(header) + "\r\n")
 
@@ -210,6 +212,17 @@ class ExportService:
         story.append(self._build_pdf_detail_table(summary, tz))
         story.append(Spacer(1, 0.5 * cm))
 
+        all_modifications = [
+            mod
+            for day in self._collect_daily_rows(summary)
+            for mod in day.modifications
+        ]
+        if all_modifications:
+            story.append(Paragraph("<b>Registros modificados</b>", styles["Heading2"]))
+            story.append(Spacer(1, 0.2 * cm))
+            story.append(self._build_pdf_modifications_table(all_modifications, tz))
+            story.append(Spacer(1, 0.5 * cm))
+
         story.append(Paragraph(
             "Generado por OpenJornada. Registro conforme al art. 34.9 ET y RD-Ley 8/2019.",
             styles["Italic"],
@@ -263,6 +276,29 @@ class ExportService:
         overtime_hours = max(0.0, round((day.total_worked_minutes - daily_expected) / 60, 2))
         modified_str = "Si" if day.is_modified else "No"
 
+        mod_count = len(day.modifications)
+        if day.modifications:
+            parts = []
+            for mod in day.modifications:
+                def _fmt(iso_str: str) -> str:
+                    if not iso_str:
+                        return "-"
+                    try:
+                        from datetime import datetime, timezone as dt_timezone
+                        dt = datetime.fromisoformat(iso_str)
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=dt_timezone.utc)
+                        return dt.astimezone(tz).strftime("%H:%M")
+                    except ValueError:
+                        return iso_str
+                parts.append(
+                    f"[{mod.record_type}] {_fmt(mod.original_timestamp)} -> {_fmt(mod.new_timestamp)}"
+                    f" (por {mod.modified_by_admin_email})"
+                )
+            detail_str = " | ".join(parts)
+        else:
+            detail_str = ""
+
         fields = [
             date_str,
             day.worker_id_number,
@@ -274,6 +310,8 @@ class ExportService:
             f"{day.total_pause_minutes:.0f}",
             f"{overtime_hours:.2f}",
             modified_str,
+            str(mod_count),
+            detail_str,
         ]
         return ";".join(fields)
 
@@ -465,6 +503,41 @@ class ExportService:
         else:
             col_widths = [3 * cm, 2.5 * cm, 2.5 * cm, 2.5 * cm, 3 * cm, 3.5 * cm, 2.5 * cm]
 
+        table = Table(data, colWidths=col_widths, repeatRows=1)
+        table.setStyle(self._pdf_table_style())
+        self._apply_alternating_rows(table, len(data))
+        return table
+
+    def _build_pdf_modifications_table(
+        self, modifications: list[ModificationEntry], tz: pytz.BaseTzInfo
+    ) -> Table:
+        """Build the modifications audit table for the PDF report."""
+        header = ["Fecha", "Tipo", "Hora original", "Hora modificada", "Aprobado por", "Motivo"]
+        data = [header]
+
+        for mod in modifications:
+            def _fmt_iso(iso_str: str) -> str:
+                if not iso_str:
+                    return "-"
+                try:
+                    from datetime import datetime, timezone as dt_timezone
+                    dt = datetime.fromisoformat(iso_str)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=dt_timezone.utc)
+                    return dt.astimezone(tz).strftime("%d/%m/%Y %H:%M")
+                except ValueError:
+                    return iso_str
+
+            data.append([
+                _fmt_iso(mod.original_timestamp)[:10] if mod.original_timestamp else "-",
+                mod.record_type,
+                _fmt_iso(mod.original_timestamp),
+                _fmt_iso(mod.new_timestamp),
+                mod.modified_by_admin_email,
+                mod.modification_reason,
+            ])
+
+        col_widths = [2.8 * cm, 2 * cm, 4 * cm, 4 * cm, 6 * cm, 8 * cm]
         table = Table(data, colWidths=col_widths, repeatRows=1)
         table.setStyle(self._pdf_table_style())
         self._apply_alternating_rows(table, len(data))
