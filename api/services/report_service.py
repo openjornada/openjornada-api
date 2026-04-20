@@ -350,7 +350,7 @@ class ReportService:
         for rec in records:
             if rec.get("modified_by_admin_id"):
                 modifications.append(ModificationEntry(
-                    record_id=str(rec["_id"]),
+                    record_id=str(rec.get("_id", "")),
                     record_type=rec.get("type", ""),
                     original_timestamp=_to_iso(rec.get("original_timestamp")),
                     new_timestamp=_to_iso(rec.get("timestamp")),
