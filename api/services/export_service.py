@@ -10,6 +10,8 @@ requested local timezone before being written to the output files.
 
 import io
 import logging
+from datetime import datetime
+from datetime import timezone as dt_timezone
 from typing import Union
 
 import pytz
@@ -257,8 +259,7 @@ class ExportService:
     # Internal helpers — CSV formatting
     # ---------------------------------------------------------------------------
 
-    @staticmethod
-    def _format_csv_row(day: DailyWorkSummary, tz: pytz.BaseTzInfo) -> str:
+    def _format_csv_row(self, day: DailyWorkSummary, tz: pytz.BaseTzInfo) -> str:
         """Render a single DailyWorkSummary as a semicolon-delimited CSV row."""
         date_str = day.date.strftime("%d/%m/%Y")
 
@@ -280,19 +281,8 @@ class ExportService:
         if day.modifications:
             parts = []
             for mod in day.modifications:
-                def _fmt(iso_str: str) -> str:
-                    if not iso_str:
-                        return "-"
-                    try:
-                        from datetime import datetime, timezone as dt_timezone
-                        dt = datetime.fromisoformat(iso_str)
-                        if dt.tzinfo is None:
-                            dt = dt.replace(tzinfo=dt_timezone.utc)
-                        return dt.astimezone(tz).strftime("%H:%M")
-                    except ValueError:
-                        return iso_str
                 parts.append(
-                    f"[{mod.record_type}] {_fmt(mod.original_timestamp)} -> {_fmt(mod.new_timestamp)}"
+                    f"[{mod.record_type}] {self._fmt_hhmm(mod.original_timestamp, tz)} -> {self._fmt_hhmm(mod.new_timestamp, tz)}"
                     f" (por {mod.modified_by_admin_email})"
                 )
             detail_str = " | ".join(parts)
@@ -508,36 +498,53 @@ class ExportService:
         self._apply_alternating_rows(table, len(data))
         return table
 
+    @staticmethod
+    def _fmt_hhmm(iso_str: str, tz: pytz.BaseTzInfo) -> str:
+        """Format an ISO timestamp string as HH:MM in the given timezone."""
+        if not iso_str:
+            return "-"
+        try:
+            dt = datetime.fromisoformat(iso_str)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=dt_timezone.utc)
+            return dt.astimezone(tz).strftime("%H:%M")
+        except ValueError:
+            return iso_str
+
+    @staticmethod
+    def _fmt_iso(iso_str: str, tz: pytz.BaseTzInfo) -> str:
+        """Format an ISO timestamp string as DD/MM/YYYY HH:MM in the given timezone."""
+        if not iso_str:
+            return "-"
+        try:
+            dt = datetime.fromisoformat(iso_str)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=dt_timezone.utc)
+            return dt.astimezone(tz).strftime("%d/%m/%Y %H:%M")
+        except ValueError:
+            return iso_str
+
     def _build_pdf_modifications_table(
         self, modifications: list[ModificationEntry], tz: pytz.BaseTzInfo
     ) -> Table:
         """Build the modifications audit table for the PDF report."""
+        styles = getSampleStyleSheet()
+        normal_style = styles["Normal"]
+
         header = ["Fecha", "Tipo", "Hora original", "Hora modificada", "Aprobado por", "Motivo"]
         data = [header]
 
         for mod in modifications:
-            def _fmt_iso(iso_str: str) -> str:
-                if not iso_str:
-                    return "-"
-                try:
-                    from datetime import datetime, timezone as dt_timezone
-                    dt = datetime.fromisoformat(iso_str)
-                    if dt.tzinfo is None:
-                        dt = dt.replace(tzinfo=dt_timezone.utc)
-                    return dt.astimezone(tz).strftime("%d/%m/%Y %H:%M")
-                except ValueError:
-                    return iso_str
-
             data.append([
-                _fmt_iso(mod.original_timestamp)[:10] if mod.original_timestamp else "-",
+                self._fmt_iso(mod.original_timestamp, tz)[:10] if mod.original_timestamp else "-",
                 mod.record_type,
-                _fmt_iso(mod.original_timestamp),
-                _fmt_iso(mod.new_timestamp),
-                mod.modified_by_admin_email,
-                mod.modification_reason,
+                self._fmt_iso(mod.original_timestamp, tz),
+                self._fmt_iso(mod.new_timestamp, tz),
+                Paragraph(mod.modified_by_admin_email or "-", normal_style),
+                Paragraph(mod.modification_reason or "-", normal_style),
             ])
 
-        col_widths = [2.8 * cm, 2 * cm, 4 * cm, 4 * cm, 6 * cm, 8 * cm]
+        col_widths = [2.0 * cm, 1.5 * cm, 2.5 * cm, 2.5 * cm, 3.5 * cm, 4.0 * cm]
         table = Table(data, colWidths=col_widths, repeatRows=1)
         table.setStyle(self._pdf_table_style())
         self._apply_alternating_rows(table, len(data))

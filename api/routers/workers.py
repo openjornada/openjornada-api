@@ -22,6 +22,7 @@ from ..database import db, convert_id
 from ..auth.auth_handler import get_current_active_user, get_password_hash, verify_password
 from ..auth.permissions import PermissionChecker
 from ..services.email_service import email_service
+from ..utils.worker_auth import _authenticate_worker
 
 router = APIRouter()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -670,32 +671,25 @@ async def get_worker_me(request: WorkerMeRequest) -> WorkerMeResponse:
     La autenticación se realiza con email y contraseña (sin JWT).
     Los campos sensibles (hashed_password, reset_token, etc.) nunca se incluyen.
     """
-    logger.info(f"[WORKER-ME] Request received for email: {request.email}")
+    logger.info("[WORKER-ME] Request received for email: %s", request.email)
 
-    worker = await db.Workers.find_one({"email": request.email, "deleted_at": None})
-    if not worker or not verify_password(request.password, worker.get("hashed_password", "")):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Credenciales inválidas",
-        )
-
+    worker = await _authenticate_worker(request.email, request.password)
     worker_id = str(worker["_id"])
     company_ids = [str(cid) for cid in worker.get("company_ids", [])]
 
-    # Resolve company names (active companies only)
-    company_names: List[str] = []
-    for company_id_str in company_ids:
-        try:
-            company = await db.Companies.find_one({
-                "_id": ObjectId(company_id_str),
-                "deleted_at": None,
-            })
-            company_names.append(company["name"] if company else "")
-        except Exception as e:
-            logger.warning(f"[WORKER-ME] Error loading company {company_id_str}: {e}")
-            company_names.append("")
+    # Resolve company names with a single $in query (preserves order)
+    oids = [ObjectId(cid) for cid in company_ids]
+    companies_cursor = db.Companies.find(
+        {"_id": {"$in": oids}, "deleted_at": None},
+        {"_id": 1, "name": 1},
+    )
+    company_map: dict[str, str] = {
+        str(c["_id"]): c["name"]
+        async for c in companies_cursor
+    }
+    company_names = [company_map.get(cid, "") for cid in company_ids]
 
-    logger.info(f"[WORKER-ME] Returning profile for worker: {worker_id}")
+    logger.info("[WORKER-ME] Returning profile for worker: %s", worker_id)
 
     return WorkerMeResponse(
         id=worker_id,
@@ -703,7 +697,6 @@ async def get_worker_me(request: WorkerMeRequest) -> WorkerMeResponse:
         last_name=worker.get("last_name", ""),
         email=worker["email"],
         phone_number=worker.get("phone_number", ""),
-        id_number=worker.get("id_number", ""),
         default_timezone=worker.get("default_timezone", "UTC"),
         company_ids=company_ids,
         company_names=company_names,

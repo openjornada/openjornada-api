@@ -101,7 +101,6 @@ class WorkerMeResponse(BaseModel):
     last_name: str
     email: str
     phone_number: str
-    id_number: str
     default_timezone: str
     company_ids: List[str]
     company_names: List[str]

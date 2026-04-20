@@ -19,9 +19,21 @@ from ..auth.permissions import PermissionChecker
 from ..services.change_request_validator import ChangeRequestValidator
 from ..services.email_service import EmailService
 from ..services.time_calculation_service import TimeCalculationService
+from ..utils.worker_auth import _authenticate_worker, _verify_worker_company_access
 
 router = APIRouter()
 validator = ChangeRequestValidator()
+
+
+def _dt_to_iso(val) -> Optional[str]:
+    """Convert a datetime (naive or aware) or other value to an ISO 8601 string."""
+    if val is None:
+        return None
+    if isinstance(val, datetime):
+        if val.tzinfo is None:
+            val = val.replace(tzinfo=dt_timezone.utc)
+        return val.isoformat()
+    return str(val)
 
 
 def ensure_utc_aware(dt: Optional[datetime]) -> Optional[datetime]:
@@ -541,23 +553,12 @@ async def get_worker_change_request_history(
     El campo ``admin_internal_notes`` nunca se incluye en la respuesta.
     """
     # 1. Authenticate worker
-    worker = await db.Workers.find_one({"email": request.email, "deleted_at": None})
-    if not worker or not verify_password(request.password, worker["hashed_password"]):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Credenciales incorrectas",
-        )
-
+    worker = await _authenticate_worker(request.email, request.password)
     worker_id = str(worker["_id"])
 
     # 2. If company_id provided, verify worker belongs to it
     if request.company_id is not None:
-        worker_company_ids = [str(cid) for cid in worker.get("company_ids", [])]
-        if request.company_id not in worker_company_ids:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="No tienes permisos para acceder a los datos de esta empresa",
-            )
+        _verify_worker_company_access(worker, request.company_id)
 
     # 3. Build query
     query: dict = {"worker_id": worker_id}
@@ -570,15 +571,6 @@ async def get_worker_change_request_history(
     results: List[WorkerChangeRequestResponse] = []
     async for cr in db.ChangeRequests.find(query).sort("created_at", -1).limit(request.limit):
         data = convert_id(cr)
-
-        def _dt_to_iso(val) -> Optional[str]:
-            if val is None:
-                return None
-            if isinstance(val, datetime):
-                if val.tzinfo is None:
-                    val = val.replace(tzinfo=dt_timezone.utc)
-                return val.isoformat()
-            return str(val)
 
         # date field is stored as datetime (start-of-day); format as ISO date string
         date_val = data.get("date")

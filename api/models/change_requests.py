@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr, Field, AwareDatetime
-from typing import Optional, List
+from typing import Optional, List, Literal
 from datetime import datetime, date
 from enum import Enum
 
@@ -105,7 +105,7 @@ class WorkerChangeRequestsRequest(BaseModel):
     email: EmailStr
     password: str
     company_id: Optional[str] = None
-    status_filter: Optional[str] = None  # "pending" | "accepted" | "rejected"
+    status_filter: Optional[Literal["pending", "accepted", "rejected"]] = None
     limit: int = Field(50, ge=1, le=100)
 
 
