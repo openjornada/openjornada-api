@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, status, Depends, Query, Body
+from fastapi import APIRouter, HTTPException, status, Depends, Query
 from datetime import datetime, date, timezone as dt_timezone
 from typing import List, Optional
 from bson.objectid import ObjectId
@@ -15,7 +15,7 @@ from ..models.time_records import (
 )
 from ..models.auth import APIUser
 from ..database import db, convert_id
-from ..auth.auth_handler import get_current_active_user, verify_password
+from ..auth.auth_handler import verify_password
 from ..auth.permissions import PermissionChecker
 from ..services.time_calculation_service import TimeCalculationService
 
@@ -102,7 +102,7 @@ async def create_time_record(
 
     # 7. Get current time in UTC
     current_time_utc = datetime.now(dt_timezone.utc)
-    timezone = credentials.timezone or "UTC"
+
 
     # 8. DETERMINE TYPE OF RECORD BASED ON LAST RECORD
     if not last_record or last_record["type"] == "exit":
@@ -157,7 +157,7 @@ async def create_time_record(
                     "company_ids": credentials.company_id,
                     "deleted_at": None
                 })
-            except:
+            except Exception:
                 pause_type = None
 
             if not pause_type:
@@ -300,7 +300,7 @@ async def create_time_record(
                     "company_ids": credentials.company_id,
                     "deleted_at": None
                 })
-            except:
+            except Exception:
                 pause_type = None
 
             if not pause_type:
@@ -398,7 +398,7 @@ async def get_latest_time_record(
     # Check if worker exists
     try:
         worker = await db.Workers.find_one({"_id": ObjectId(worker_id)})
-    except:
+    except Exception:
         worker = None
         
     if not worker:
@@ -450,7 +450,7 @@ async def get_all_time_records(
     if start_date or end_date:
         try:
             tz = pytz.timezone(timezone)
-        except:
+        except Exception:
             tz = pytz.UTC
 
         date_query = {}
@@ -481,7 +481,7 @@ async def get_all_time_records(
         if not worker_name:
             try:
                 worker = await db.Workers.find_one({"_id": ObjectId(record["worker_id"])})
-            except:
+            except Exception:
                 worker = None
 
             if worker:
@@ -495,7 +495,7 @@ async def get_all_time_records(
             try:
                 worker = await db.Workers.find_one({"_id": ObjectId(record["worker_id"])})
                 worker_id_number = worker.get("id_number", "Missing ID") if worker else "Unknown ID"
-            except:
+            except Exception:
                 worker_id_number = "Unknown ID"
 
         # Prepare record data with all required fields
@@ -522,7 +522,7 @@ async def get_worker_time_records(
     # Check if worker exists
     try:
         worker = await db.Workers.find_one({"_id": ObjectId(worker_id)})
-    except:
+    except Exception:
         worker = None
         
     if not worker:
@@ -610,7 +610,7 @@ async def get_current_status(credentials: TimeRecordWorkerCredentials):
     # 3. Get company details
     try:
         company = await db.Companies.find_one({"_id": ObjectId(credentials.company_id)})
-    except:
+    except Exception:
         company = None
 
     if not company:

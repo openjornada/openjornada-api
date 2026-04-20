@@ -1,7 +1,6 @@
 from pydantic import BaseModel, Field, EmailStr
 from typing import Optional, List
 from datetime import datetime
-from bson import ObjectId
 
 class PauseTypeBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=100, description="Nombre de la pausa")

@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr, Field
-from typing import Optional, ClassVar, List
+from typing import Optional, List
 from datetime import datetime
 
 from .sms import SmsWorkerConfig

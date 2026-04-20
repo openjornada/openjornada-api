@@ -1,7 +1,6 @@
 from datetime import datetime, timezone as dt_timezone
-from typing import List, Dict, Optional
+from typing import Dict, Optional
 from ..database import db
-from bson import ObjectId
 import logging
 
 logger = logging.getLogger(__name__)

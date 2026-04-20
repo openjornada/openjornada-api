@@ -1,7 +1,6 @@
 import motor.motor_asyncio
 import os
 from dotenv import load_dotenv
-from bson import ObjectId
 
 load_dotenv()
 

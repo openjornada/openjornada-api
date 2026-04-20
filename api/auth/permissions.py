@@ -1,4 +1,3 @@
-from typing import List
 from fastapi import HTTPException, status, Depends
 from ..models.auth import APIUser
 from .auth_handler import get_current_active_user

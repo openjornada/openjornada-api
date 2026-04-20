@@ -1,6 +1,6 @@
 from pydantic import BaseModel, EmailStr, Field, AwareDatetime
 from typing import Optional, List, Literal
-from datetime import datetime, date
+from datetime import date
 from enum import Enum
 
 

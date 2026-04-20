@@ -27,7 +27,6 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 
-from ..auth.auth_handler import verify_password
 from ..auth.permissions import PermissionChecker
 from ..database import db
 from ..models.auth import APIUser

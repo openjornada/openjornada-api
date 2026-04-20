@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, status, Depends, Body
+from fastapi import APIRouter, HTTPException, status, Depends
 from typing import List
 from datetime import datetime, timedelta
 from passlib.context import CryptContext
@@ -19,7 +19,7 @@ from ..models.workers import (
 )
 from ..models.auth import APIUser
 from ..database import db, convert_id
-from ..auth.auth_handler import get_current_active_user, get_password_hash, verify_password
+from ..auth.auth_handler import get_password_hash, verify_password
 from ..auth.permissions import PermissionChecker
 from ..services.email_service import email_service
 from ..utils.worker_auth import _authenticate_worker
@@ -126,7 +126,7 @@ async def create_worker(
             company = await db.Companies.find_one({"_id": ObjectId(company_id)})
             if company:
                 company_names.append(company["name"])
-        except:
+        except Exception:
             pass
 
     response_data = convert_id(created_worker)
@@ -142,7 +142,7 @@ async def update_worker(
 ):
     try:
         worker = await db.Workers.find_one({"_id": ObjectId(worker_id), "deleted_at": None})
-    except:
+    except Exception:
         worker = None
 
     if not worker:
@@ -232,7 +232,7 @@ async def update_worker(
             company = await db.Companies.find_one({"_id": ObjectId(company_id)})
             if company:
                 company_names.append(company["name"])
-        except:
+        except Exception:
             pass
 
     response_data = convert_id(updated_worker)
@@ -252,7 +252,7 @@ async def get_workers(current_user: APIUser = Depends(PermissionChecker("view_wo
                 company = await db.Companies.find_one({"_id": ObjectId(company_id)})
                 if company:
                     company_names.append(company["name"])
-            except:
+            except Exception:
                 pass
 
         worker_data = convert_id(worker)
@@ -267,7 +267,7 @@ async def get_worker(
 ):
     try:
         worker = await db.Workers.find_one({"_id": ObjectId(worker_id), "deleted_at": None})
-    except:
+    except Exception:
         worker = None
 
     if not worker:
@@ -283,7 +283,7 @@ async def get_worker(
             company = await db.Companies.find_one({"_id": ObjectId(company_id)})
             if company:
                 company_names.append(company["name"])
-        except:
+        except Exception:
             pass
 
     worker_data = convert_id(worker)
@@ -316,7 +316,7 @@ async def delete_worker(
     """
     try:
         worker = await db.Workers.find_one({"_id": ObjectId(worker_id), "deleted_at": None})
-    except:
+    except Exception:
         worker = None
 
     if not worker:

@@ -4,7 +4,6 @@ Backups router - API endpoints for backup management.
 from fastapi import APIRouter, HTTPException, status, Depends
 from fastapi.responses import FileResponse
 from bson import ObjectId
-from typing import Optional
 
 from ..models.backups import (
     BackupResponse,
@@ -15,7 +14,7 @@ from ..models.backups import (
     TestConnectionResponse
 )
 from ..models.auth import APIUser
-from ..database import db, convert_id
+from ..database import db
 from ..auth.permissions import PermissionChecker
 from ..services.backup_service import backup_service
 from ..services.scheduler_service import scheduler_service
