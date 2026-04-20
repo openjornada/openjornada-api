@@ -10,6 +10,8 @@ requested local timezone before being written to the output files.
 
 import io
 import logging
+from datetime import datetime
+from datetime import timezone as dt_timezone
 from typing import Union
 
 import pytz
@@ -30,6 +32,7 @@ from reportlab.platypus import (
 from ..models.reports import (
     CompanyMonthlySummary,
     DailyWorkSummary,
+    ModificationEntry,
     WorkerMonthlySummary,
 )
 
@@ -88,6 +91,7 @@ class ExportService:
             "Fecha", "DNI", "Nombre", "Empresa",
             "Entrada", "Salida", "Horas Trabajadas",
             "Pausas (min)", "Horas Extra", "Modificado",
+            "Registros Modificados", "Detalle Modificaciones",
         ]
         text_buffer.write(";".join(header) + "\r\n")
 
@@ -210,6 +214,17 @@ class ExportService:
         story.append(self._build_pdf_detail_table(summary, tz))
         story.append(Spacer(1, 0.5 * cm))
 
+        all_modifications = [
+            mod
+            for day in self._collect_daily_rows(summary)
+            for mod in day.modifications
+        ]
+        if all_modifications:
+            story.append(Paragraph("<b>Registros modificados</b>", styles["Heading2"]))
+            story.append(Spacer(1, 0.2 * cm))
+            story.append(self._build_pdf_modifications_table(all_modifications, tz))
+            story.append(Spacer(1, 0.5 * cm))
+
         story.append(Paragraph(
             "Generado por OpenJornada. Registro conforme al art. 34.9 ET y RD-Ley 8/2019.",
             styles["Italic"],
@@ -244,8 +259,7 @@ class ExportService:
     # Internal helpers — CSV formatting
     # ---------------------------------------------------------------------------
 
-    @staticmethod
-    def _format_csv_row(day: DailyWorkSummary, tz: pytz.BaseTzInfo) -> str:
+    def _format_csv_row(self, day: DailyWorkSummary, tz: pytz.BaseTzInfo) -> str:
         """Render a single DailyWorkSummary as a semicolon-delimited CSV row."""
         date_str = day.date.strftime("%d/%m/%Y")
 
@@ -263,6 +277,18 @@ class ExportService:
         overtime_hours = max(0.0, round((day.total_worked_minutes - daily_expected) / 60, 2))
         modified_str = "Si" if day.is_modified else "No"
 
+        mod_count = len(day.modifications)
+        if day.modifications:
+            parts = []
+            for mod in day.modifications:
+                parts.append(
+                    f"[{mod.record_type}] {self._fmt_hhmm(mod.original_timestamp, tz)} -> {self._fmt_hhmm(mod.new_timestamp, tz)}"
+                    f" (por {mod.modified_by_admin_email})"
+                )
+            detail_str = " | ".join(parts)
+        else:
+            detail_str = ""
+
         fields = [
             date_str,
             day.worker_id_number,
@@ -274,6 +300,8 @@ class ExportService:
             f"{day.total_pause_minutes:.0f}",
             f"{overtime_hours:.2f}",
             modified_str,
+            str(mod_count),
+            detail_str,
         ]
         return ";".join(fields)
 
@@ -465,6 +493,58 @@ class ExportService:
         else:
             col_widths = [3 * cm, 2.5 * cm, 2.5 * cm, 2.5 * cm, 3 * cm, 3.5 * cm, 2.5 * cm]
 
+        table = Table(data, colWidths=col_widths, repeatRows=1)
+        table.setStyle(self._pdf_table_style())
+        self._apply_alternating_rows(table, len(data))
+        return table
+
+    @staticmethod
+    def _fmt_hhmm(iso_str: str, tz: pytz.BaseTzInfo) -> str:
+        """Format an ISO timestamp string as HH:MM in the given timezone."""
+        if not iso_str:
+            return "-"
+        try:
+            dt = datetime.fromisoformat(iso_str)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=dt_timezone.utc)
+            return dt.astimezone(tz).strftime("%H:%M")
+        except ValueError:
+            return iso_str
+
+    @staticmethod
+    def _fmt_iso(iso_str: str, tz: pytz.BaseTzInfo) -> str:
+        """Format an ISO timestamp string as DD/MM/YYYY HH:MM in the given timezone."""
+        if not iso_str:
+            return "-"
+        try:
+            dt = datetime.fromisoformat(iso_str)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=dt_timezone.utc)
+            return dt.astimezone(tz).strftime("%d/%m/%Y %H:%M")
+        except ValueError:
+            return iso_str
+
+    def _build_pdf_modifications_table(
+        self, modifications: list[ModificationEntry], tz: pytz.BaseTzInfo
+    ) -> Table:
+        """Build the modifications audit table for the PDF report."""
+        styles = getSampleStyleSheet()
+        normal_style = styles["Normal"]
+
+        header = ["Fecha", "Tipo", "Hora original", "Hora modificada", "Aprobado por", "Motivo"]
+        data = [header]
+
+        for mod in modifications:
+            data.append([
+                self._fmt_iso(mod.original_timestamp, tz)[:10] if mod.original_timestamp else "-",
+                mod.record_type,
+                self._fmt_iso(mod.original_timestamp, tz),
+                self._fmt_iso(mod.new_timestamp, tz),
+                Paragraph(mod.modified_by_admin_email or "-", normal_style),
+                Paragraph(mod.modification_reason or "-", normal_style),
+            ])
+
+        col_widths = [2.0 * cm, 1.5 * cm, 2.5 * cm, 2.5 * cm, 3.5 * cm, 4.0 * cm]
         table = Table(data, colWidths=col_widths, repeatRows=1)
         table.setStyle(self._pdf_table_style())
         self._apply_alternating_rows(table, len(data))

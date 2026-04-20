@@ -92,7 +92,7 @@ async def get_pause_type(
     """
     try:
         pause_type = await db.PauseTypes.find_one({"_id": ObjectId(pause_type_id)})
-    except:
+    except Exception:
         pause_type = None
 
     if not pause_type:
@@ -117,7 +117,7 @@ async def update_pause_type(
     """
     try:
         existing = await db.PauseTypes.find_one({"_id": ObjectId(pause_type_id)})
-    except:
+    except Exception:
         existing = None
 
     if not existing:
@@ -192,7 +192,7 @@ async def delete_pause_type(
     """
     try:
         pause_type = await db.PauseTypes.find_one({"_id": ObjectId(pause_type_id)})
-    except:
+    except Exception:
         pause_type = None
 
     if not pause_type:
@@ -277,7 +277,7 @@ async def enrich_pause_type_response(pause_type: dict) -> PauseTypeResponse:
             company = await db.Companies.find_one({"_id": ObjectId(company_id), "deleted_at": None})
             if company:
                 company_names.append(company["name"])
-        except:
+        except Exception:
             pass
 
     # Contar uso

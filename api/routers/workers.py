@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, status, Depends, Body
+from fastapi import APIRouter, HTTPException, status, Depends
 from typing import List
 from datetime import datetime, timedelta
 from passlib.context import CryptContext
@@ -13,13 +13,16 @@ from ..models.workers import (
     ChangePasswordRequest,
     ForgotPasswordRequest,
     ResetPasswordRequest,
-    WorkerCompaniesRequest
+    WorkerCompaniesRequest,
+    WorkerMeRequest,
+    WorkerMeResponse,
 )
 from ..models.auth import APIUser
 from ..database import db, convert_id
-from ..auth.auth_handler import get_current_active_user, get_password_hash, verify_password
+from ..auth.auth_handler import get_password_hash, verify_password
 from ..auth.permissions import PermissionChecker
 from ..services.email_service import email_service
+from ..utils.worker_auth import _authenticate_worker
 
 router = APIRouter()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -123,7 +126,7 @@ async def create_worker(
             company = await db.Companies.find_one({"_id": ObjectId(company_id)})
             if company:
                 company_names.append(company["name"])
-        except:
+        except Exception:
             pass
 
     response_data = convert_id(created_worker)
@@ -139,7 +142,7 @@ async def update_worker(
 ):
     try:
         worker = await db.Workers.find_one({"_id": ObjectId(worker_id), "deleted_at": None})
-    except:
+    except Exception:
         worker = None
 
     if not worker:
@@ -229,7 +232,7 @@ async def update_worker(
             company = await db.Companies.find_one({"_id": ObjectId(company_id)})
             if company:
                 company_names.append(company["name"])
-        except:
+        except Exception:
             pass
 
     response_data = convert_id(updated_worker)
@@ -249,7 +252,7 @@ async def get_workers(current_user: APIUser = Depends(PermissionChecker("view_wo
                 company = await db.Companies.find_one({"_id": ObjectId(company_id)})
                 if company:
                     company_names.append(company["name"])
-            except:
+            except Exception:
                 pass
 
         worker_data = convert_id(worker)
@@ -264,7 +267,7 @@ async def get_worker(
 ):
     try:
         worker = await db.Workers.find_one({"_id": ObjectId(worker_id), "deleted_at": None})
-    except:
+    except Exception:
         worker = None
 
     if not worker:
@@ -280,7 +283,7 @@ async def get_worker(
             company = await db.Companies.find_one({"_id": ObjectId(company_id)})
             if company:
                 company_names.append(company["name"])
-        except:
+        except Exception:
             pass
 
     worker_data = convert_id(worker)
@@ -313,7 +316,7 @@ async def delete_worker(
     """
     try:
         worker = await db.Workers.find_one({"_id": ObjectId(worker_id), "deleted_at": None})
-    except:
+    except Exception:
         worker = None
 
     if not worker:
@@ -658,3 +661,43 @@ async def get_worker_companies(request: WorkerCompaniesRequest):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error al obtener las empresas"
         )
+
+
+@router.post("/workers/me", response_model=WorkerMeResponse, status_code=status.HTTP_200_OK)
+async def get_worker_me(request: WorkerMeRequest) -> WorkerMeResponse:
+    """
+    Devuelve el perfil del propio trabajador.
+
+    La autenticación se realiza con email y contraseña (sin JWT).
+    Los campos sensibles (hashed_password, reset_token, etc.) nunca se incluyen.
+    """
+    logger.info("[WORKER-ME] Request received for email: %s", request.email)
+
+    worker = await _authenticate_worker(request.email, request.password)
+    worker_id = str(worker["_id"])
+    company_ids = [str(cid) for cid in worker.get("company_ids", [])]
+
+    # Resolve company names with a single $in query (preserves order)
+    oids = [ObjectId(cid) for cid in company_ids]
+    companies_cursor = db.Companies.find(
+        {"_id": {"$in": oids}, "deleted_at": None},
+        {"_id": 1, "name": 1},
+    )
+    company_map: dict[str, str] = {
+        str(c["_id"]): c["name"]
+        async for c in companies_cursor
+    }
+    company_names = [company_map.get(cid, "") for cid in company_ids]
+
+    logger.info("[WORKER-ME] Returning profile for worker: %s", worker_id)
+
+    return WorkerMeResponse(
+        id=worker_id,
+        first_name=worker.get("first_name", ""),
+        last_name=worker.get("last_name", ""),
+        email=worker["email"],
+        phone_number=worker.get("phone_number", ""),
+        default_timezone=worker.get("default_timezone", "UTC"),
+        company_ids=company_ids,
+        company_names=company_names,
+    )

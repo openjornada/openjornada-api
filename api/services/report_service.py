@@ -19,6 +19,7 @@ from ..database import db
 from ..models.reports import (
     CompanyMonthlySummary,
     DailyWorkSummary,
+    ModificationEntry,
     OvertimeReport,
     WorkerMonthlySummary,
     WorkerOvertimeSummary,
@@ -34,6 +35,14 @@ def ensure_utc_aware(dt: Optional[datetime]) -> Optional[datetime]:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=dt_timezone.utc)
     return dt
+
+
+def _to_iso(dt) -> str:
+    """Convert a datetime (or None) to an ISO 8601 UTC string. Returns '' for None."""
+    if dt is None:
+        return ""
+    dt = ensure_utc_aware(dt)
+    return dt.isoformat()
 
 
 class ReportService:
@@ -337,6 +346,19 @@ class ReportService:
 
         is_modified = any(record.get("modified_by_admin_id") for record in records)
 
+        modifications = []
+        for rec in records:
+            if rec.get("modified_by_admin_id"):
+                modifications.append(ModificationEntry(
+                    record_id=str(rec.get("_id", "")),
+                    record_type=rec.get("type", ""),
+                    original_timestamp=_to_iso(rec.get("original_timestamp")),
+                    new_timestamp=_to_iso(rec.get("timestamp")),
+                    modified_at=_to_iso(rec.get("modified_at")),
+                    modified_by_admin_email=rec.get("modified_by_admin_email", ""),
+                    modification_reason=rec.get("modification_reason", ""),
+                ))
+
         return DailyWorkSummary(
             date=target_date,
             worker_id=worker_info["worker_id"],
@@ -352,6 +374,7 @@ class ReportService:
             records_count=len(records),
             has_open_session=has_open_session,
             is_modified=is_modified,
+            modifications=modifications,
         )
 
     def _group_records_by_day(

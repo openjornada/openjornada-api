@@ -1,6 +1,6 @@
 from pydantic import BaseModel, AwareDatetime, EmailStr
-from typing import Optional, ClassVar
-from datetime import datetime, date
+from typing import Optional
+from datetime import date
 
 class TimeRecordModel(BaseModel):
     worker_id: str

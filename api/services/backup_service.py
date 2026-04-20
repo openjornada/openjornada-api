@@ -15,7 +15,6 @@ from typing import Optional, Tuple
 from bson import ObjectId
 
 from ..database import db, MONGO_URL, DB_NAME
-from ..utils.encryption import credential_encryption
 from .storage import StorageBackend, S3Storage, SFTPStorage, LocalStorage
 from .storage.s3_storage import S3StoragePlain
 from .storage.sftp_storage import SFTPStoragePlain
@@ -421,7 +420,7 @@ class BackupService:
 
 
 # Import here to avoid circular import
-from datetime import timedelta
+from datetime import timedelta  # noqa: E402
 
 # Singleton
 backup_service = BackupService()

@@ -99,7 +99,7 @@ class EmailRenderer:
             logger.info(f"Successfully rendered template: {template_name}")
             return html_body, text_body
 
-        except TemplateNotFound as e:
+        except TemplateNotFound:
             logger.error(f"Template not found: {template_name}")
             raise
         except Exception as e:

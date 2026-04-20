@@ -5,7 +5,6 @@ Supports LabsMobile provider via REST JSON API.
 Credentials are encrypted at rest using the same mechanism as backup_config.
 """
 
-import asyncio
 import logging
 import os
 from abc import ABC, abstractmethod
@@ -300,8 +299,8 @@ class SmsService:
         # 1. Check balance mode
         if not self._unlimited_balance:
             logger.warning(
-                f"[SMS] SMS credits via Stripe not configured yet. "
-                f"Set SMS_UNLIMITED_BALANCE=1 to enable unlimited sending."
+                "[SMS] SMS credits via Stripe not configured yet. "
+                "Set SMS_UNLIMITED_BALANCE=1 to enable unlimited sending."
             )
             return False
 

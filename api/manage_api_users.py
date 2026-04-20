@@ -11,14 +11,12 @@ import secrets
 from datetime import datetime, timedelta
 from getpass import getpass
 import argparse
-from typing import Optional, List
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from api.database import db, client
 from api.auth.auth_handler import get_password_hash
 from api.services.email_service import EmailService
-from bson import ObjectId
 
 
 class Colors:
@@ -212,7 +210,7 @@ async def main():
     show_parser.add_argument('username', help='Username')
     
     # List users
-    list_parser = subparsers.add_parser('list', help='List all users')
+    subparsers.add_parser('list', help='List all users')
 
     # Send welcome email
     welcome_parser = subparsers.add_parser('welcome', help='Send welcome email to existing admin user')

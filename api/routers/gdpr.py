@@ -282,7 +282,7 @@ async def anonymize_worker_data(
     )
 
     return AnonymizeResponse(
-        message=f"Datos del trabajador anonimizados correctamente. Los registros de jornada se conservan de forma anónima según la obligación legal de 4 años.",
+        message="Datos del trabajador anonimizados correctamente. Los registros de jornada se conservan de forma anónima según la obligación legal de 4 años.",
         anonymized_at=anonymize_timestamp.isoformat(),
         reason=request.reason
     )

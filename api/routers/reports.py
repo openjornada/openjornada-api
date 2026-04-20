@@ -17,6 +17,7 @@ Exposes two families of endpoints:
     POST /reports/worker/signatures/status Last 12 months signature status
 """
 
+import hashlib
 import io
 import csv
 import logging
@@ -26,7 +27,6 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 
-from ..auth.auth_handler import verify_password
 from ..auth.permissions import PermissionChecker
 from ..database import db
 from ..models.auth import APIUser
@@ -38,12 +38,14 @@ from ..models.reports import (
     OvertimeReport,
     RecordIntegrity,
     SignatureStatusResponse,
+    WorkerExportRequest,
     WorkerMonthlySummary,
     WorkerReportRequest,
 )
 from ..services.export_service import ExportService
 from ..services.integrity_service import IntegrityService
 from ..services.report_service import ReportService
+from ..utils.worker_auth import _authenticate_worker, _verify_worker_company_access
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -63,48 +65,6 @@ _FILE_EXTENSIONS: dict[ExportFormat, str] = {
     ExportFormat.XLSX: "xlsx",
     ExportFormat.PDF: "pdf",
 }
-
-
-async def _authenticate_worker(email: str, password: str) -> dict:
-    """
-    Authenticate a worker by email and hashed password.
-
-    Args:
-        email: Worker's registered email address.
-        password: Plain-text password to verify against the stored hash.
-
-    Returns:
-        The raw MongoDB worker document.
-
-    Raises:
-        HTTPException 401: If the worker is not found or the password is wrong.
-    """
-    worker = await db.Workers.find_one({"email": email, "deleted_at": None})
-    if not worker or not verify_password(password, worker["hashed_password"]):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Credenciales incorrectas",
-        )
-    return worker
-
-
-def _verify_worker_company_access(worker: dict, company_id: str) -> None:
-    """
-    Verify that *worker* belongs to *company_id*.
-
-    Args:
-        worker: Raw MongoDB worker document (must contain ``company_ids``).
-        company_id: String company identifier to check access against.
-
-    Raises:
-        HTTPException 403: If the worker does not belong to the company.
-    """
-    worker_company_ids = [str(cid) for cid in worker.get("company_ids", [])]
-    if company_id not in worker_company_ids:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No tienes permisos para acceder a los datos de esta empresa",
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -599,3 +559,72 @@ async def get_worker_signature_status(
     )
 
     return SignatureStatusResponse(pending=pending, signed=signed)
+
+
+@router.post(
+    "/reports/worker/monthly/export",
+    summary="Exportar informe mensual del propio trabajador (CSV / PDF)",
+)
+async def export_worker_own_monthly_report(
+    request: WorkerExportRequest,
+) -> StreamingResponse:
+    """
+    Permite a un trabajador exportar su propio resumen mensual de jornada.
+
+    La autenticación se realiza con email y contraseña (sin JWT). El trabajador
+    sólo puede exportar datos de empresas a las que pertenece.
+
+    Cabeceros de respuesta:
+
+    - ``X-Report-Hash``: SHA-256 del contenido del fichero (para auditoría).
+    - ``X-Report-Generated``: Timestamp ISO 8601 de generación.
+    """
+    worker = await _authenticate_worker(request.email, request.password)
+    _verify_worker_company_access(worker, request.company_id)
+
+    worker_id = str(worker["_id"])
+    logger.info(
+        "Worker self-export requested: worker=%s company=%s year=%d month=%d format=%s",
+        worker_id, request.company_id, request.year, request.month, request.format,
+    )
+
+    summary = await ReportService().get_worker_monthly_summary(
+        company_id=request.company_id,
+        worker_id=worker_id,
+        year=request.year,
+        month=request.month,
+        timezone=request.timezone,
+    )
+
+    export_service = ExportService()
+    if request.format == "csv":
+        buf: io.BytesIO = await export_service.export_monthly_csv(summary, timezone=request.timezone)
+        media_type = "text/csv"
+        ext = "csv"
+    else:
+        buf = await export_service.export_monthly_pdf(summary, timezone=request.timezone)
+        media_type = "application/pdf"
+        ext = "pdf"
+
+    raw_bytes = buf.getvalue()
+    report_hash = hashlib.sha256(raw_bytes).hexdigest()
+    buf.seek(0)
+
+    worker_name = f"{worker.get('first_name', '')}_{worker.get('last_name', '')}".strip("_").replace(" ", "_")
+    filename = f"informe_{worker_name}_{request.year}-{request.month:02d}.{ext}"
+    generated_at = datetime.now(dt_timezone.utc).isoformat()
+
+    logger.info(
+        "Worker self-export generated: file=%s hash=%s worker=%s",
+        filename, report_hash, worker_id,
+    )
+
+    return StreamingResponse(
+        content=buf,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Report-Generated": generated_at,
+            "X-Report-Hash": report_hash,
+        },
+    )

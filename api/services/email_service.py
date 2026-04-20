@@ -7,7 +7,6 @@ Refactored to use Jinja2 templates for email content.
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from typing import Optional
 import os
 import asyncio
 from concurrent.futures import ThreadPoolExecutor

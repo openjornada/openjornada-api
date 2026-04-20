@@ -12,6 +12,18 @@ class ExportFormat(str, Enum):
     PDF = "pdf"
 
 
+class ModificationEntry(BaseModel):
+    """Audit record for a single admin-approved timestamp change on a time record."""
+
+    record_id: str
+    record_type: str                  # "entry" | "exit"
+    original_timestamp: str           # ISO datetime UTC
+    new_timestamp: str                # ISO datetime UTC (valor actual del registro)
+    modified_at: str                  # cuándo se aprobó el cambio (ISO UTC)
+    modified_by_admin_email: str      # email del admin que lo aprobó
+    modification_reason: str          # motivo enviado por el trabajador
+
+
 class DailyWorkSummary(BaseModel):
     """Daily work summary for a single worker."""
 
@@ -32,6 +44,7 @@ class DailyWorkSummary(BaseModel):
     records_count: int = 0
     has_open_session: bool = False
     is_modified: bool = False
+    modifications: List[ModificationEntry] = []
 
 
 class WorkerMonthlySummary(BaseModel):
@@ -179,3 +192,15 @@ class RecordIntegrity(BaseModel):
     integrity_hash: str    # Hash stored in the database at creation time
     computed_hash: str     # Hash recomputed from current record fields
     verified: bool         # True when integrity_hash == computed_hash
+
+
+class WorkerExportRequest(BaseModel):
+    """Request body for a worker to export their own monthly report."""
+
+    email: EmailStr
+    password: str
+    company_id: str
+    year: int = Field(..., ge=2020, le=2035)
+    month: int = Field(..., ge=1, le=12)
+    format: Literal["pdf", "csv"] = "pdf"
+    timezone: str = "Europe/Madrid"
