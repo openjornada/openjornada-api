@@ -341,6 +341,10 @@ async def delete_worker(
         }}
     )
 
+    # Remove shift state so the (now deleted) worker cannot hold an open
+    # jornada that would block the state machine.
+    await db.WorkerShiftStates.delete_many({"worker_id": worker_id})
+
     return None
 
 @router.patch("/workers/change-password", status_code=status.HTTP_200_OK)

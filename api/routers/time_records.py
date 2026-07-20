@@ -8,6 +8,7 @@ import pytz
 from ..models.time_records import (
     TimeRecordModel,
     TimeRecordWorkerCredentials,
+    CreateTimeRecordCredentials,
     TimeRecordResponse,
     TimeRecordHistoryResponse,
     WorkerCurrentStatusResponse,
@@ -18,6 +19,7 @@ from ..database import db, convert_id
 from ..auth.auth_handler import verify_password
 from ..auth.permissions import PermissionChecker
 from ..services.time_calculation_service import TimeCalculationService
+from .shift_state import transition_shift_state, revert_shift_state
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -36,7 +38,7 @@ def ensure_utc_aware(dt: Optional[datetime]) -> Optional[datetime]:
 
 @router.post("/time-records/", response_model=TimeRecordResponse, status_code=status.HTTP_201_CREATED)
 async def create_time_record(
-    credentials: TimeRecordWorkerCredentials,
+    credentials: CreateTimeRecordCredentials,
     current_user: APIUser = Depends(PermissionChecker("create_time_records"))
 ):
     # 1. Validate company_id is provided
@@ -94,78 +96,60 @@ async def create_time_record(
             detail="No tienes permisos para registrar tiempo en esta empresa"
         )
 
-    # 6. Get last record in this company
-    last_record = await db.TimeRecords.find_one(
-        {"worker_id": worker_id, "company_id": credentials.company_id},
-        sort=[("created_at", -1)]
-    )
-
-    # 7. Get current time in UTC
+    # 6. Get current time in UTC. Captured BEFORE the CAS so the state doc and
+    #    the TimeRecord share the same instant.
     current_time_utc = datetime.now(dt_timezone.utc)
 
+    # PASO A — action is validated by Pydantic (Literal field); always a known value here.
+    action = credentials.action
 
-    # 8. DETERMINE TYPE OF RECORD BASED ON LAST RECORD
-    if not last_record or last_record["type"] == "exit":
-        # ========================================
-        # CASE 1: ENTRY (first entry of the day or after exit)
-        # ========================================
-        if credentials.action and credentials.action != "entry":
+    # PASO B — business validations PRE-CAS (no state or TimeRecords touched)
+    pause_info = None
+    if action == "pause_start":
+        if not credentials.pause_type_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Debes hacer una entrada antes de registrar pausas o salidas"
+                detail="Debes seleccionar un tipo de pausa"
+            )
+        try:
+            pause_type = await db.PauseTypes.find_one({
+                "_id": ObjectId(credentials.pause_type_id),
+                "company_ids": credentials.company_id,
+                "deleted_at": None
+            })
+        except Exception:
+            pause_type = None
+
+        if not pause_type:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Tipo de pausa no válido para esta empresa"
+            )
+        pause_info = {
+            "pause_type_id":        credentials.pause_type_id,
+            "pause_type_name":      pause_type["name"],
+            "pause_counts_as_work": pause_type["type"] == "inside_shift",
+        }
+
+    # PASO C — ATOMIC GUARD. Writes entry_time / open_pause; returns pre-CAS image.
+    version, prev = await transition_shift_state(
+        worker_id, credentials.company_id, action, current_time_utc, pause_info
+    )
+
+    try:
+        # PASO D — build TimeRecord WITHOUT reading the log (data comes from `prev`)
+        if action == "entry":
+            new_record = TimeRecordModel(
+                worker_id=worker_id,
+                worker_name=worker_name,
+                timestamp=current_time_utc,
+                type="entry",
+                recorded_by=current_user.username,
+                company_id=credentials.company_id,
+                company_name=company_name,
             )
 
-        new_record = TimeRecordModel(
-            worker_id=worker_id,
-            worker_name=worker_name,
-            timestamp=current_time_utc,
-            type="entry",
-            recorded_by=current_user.username,
-            company_id=credentials.company_id,
-            company_name=company_name
-        )
-
-        record_data = new_record.model_dump()
-        record_data["created_at"] = current_time_utc
-
-        result = await db.TimeRecords.insert_one(record_data)
-        created_record = await db.TimeRecords.find_one({"_id": result.inserted_id})
-
-        record_data_response = {**convert_id(created_record)}
-        record_data_response["record_type"] = "entry"
-        record_data_response["timestamp"] = ensure_utc_aware(created_record.get("timestamp"))
-
-        return TimeRecordResponse(**record_data_response)
-
-    elif last_record["type"] == "entry":
-        # ========================================
-        # CASE 2: After ENTRY → can be PAUSE_START or EXIT
-        # ========================================
-
-        if credentials.action == "pause_start":
-            # PAUSE START
-            if not credentials.pause_type_id:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Debes seleccionar un tipo de pausa"
-                )
-
-            # Validate pause type exists and belongs to this company
-            try:
-                pause_type = await db.PauseTypes.find_one({
-                    "_id": ObjectId(credentials.pause_type_id),
-                    "company_ids": credentials.company_id,
-                    "deleted_at": None
-                })
-            except Exception:
-                pause_type = None
-
-            if not pause_type:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Tipo de pausa no válido para esta empresa"
-                )
-
+        elif action == "pause_start":
             new_record = TimeRecordModel(
                 worker_id=worker_id,
                 worker_name=worker_name,
@@ -174,221 +158,99 @@ async def create_time_record(
                 recorded_by=current_user.username,
                 company_id=credentials.company_id,
                 company_name=company_name,
-                pause_type_id=credentials.pause_type_id,
-                pause_type_name=pause_type["name"],
-                pause_counts_as_work=(pause_type["type"] == "inside_shift")
+                pause_type_id=pause_info["pause_type_id"],
+                pause_type_name=pause_info["pause_type_name"],
+                pause_counts_as_work=pause_info["pause_counts_as_work"],
             )
 
-            record_data = new_record.model_dump()
-            record_data["created_at"] = current_time_utc
-
-            result = await db.TimeRecords.insert_one(record_data)
-            created_record = await db.TimeRecords.find_one({"_id": result.inserted_id})
-
-            record_data_response = {**convert_id(created_record)}
-            record_data_response["record_type"] = "pause_start"
-            record_data_response["timestamp"] = ensure_utc_aware(created_record.get("timestamp"))
-
-            return TimeRecordResponse(**record_data_response)
-
-        else:
-            # EXIT (salida) - buscar el ENTRY original
-            entry_time = ensure_utc_aware(last_record["timestamp"])
-
-            # Calculate duration considering pauses
-            duration_minutes = await TimeCalculationService.calculate_duration_with_pauses(
-                worker_id=worker_id,
-                company_id=credentials.company_id,
-                entry_time=entry_time,
-                exit_time=current_time_utc
-            )
-
-            new_record = TimeRecordModel(
-                worker_id=worker_id,
-                worker_name=worker_name,
-                timestamp=current_time_utc,
-                duration_minutes=duration_minutes,
-                type="exit",
-                recorded_by=current_user.username,
-                company_id=credentials.company_id,
-                company_name=company_name
-            )
-
-            record_data = new_record.model_dump()
-            record_data["created_at"] = current_time_utc
-
-            result = await db.TimeRecords.insert_one(record_data)
-            created_record = await db.TimeRecords.find_one({"_id": result.inserted_id})
-
-            record_data_response = {**convert_id(created_record)}
-            record_data_response["record_type"] = "exit"
-            record_data_response["timestamp"] = ensure_utc_aware(created_record.get("timestamp"))
-
-            return TimeRecordResponse(**record_data_response)
-
-    elif last_record["type"] == "pause_start":
-        # ========================================
-        # CASE 3: After PAUSE_START → can only be PAUSE_END
-        # ========================================
-
-        if credentials.action == "exit":
-            # Trying to EXIT with open pause → BLOCK
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Tienes una pausa abierta ({last_record.get('pause_type_name', 'sin nombre')}). Debes finalizarla antes de cerrar la jornada."
-            )
-
-        if credentials.action == "pause_start":
-            # Trying to nest pauses → BLOCK
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Ya tienes una pausa en curso. Debes finalizarla antes de iniciar otra."
-            )
-
-        # PAUSE_END
-        # Calculate pause duration
-        pause_start_time = ensure_utc_aware(last_record["timestamp"])
-        pause_duration_minutes = (current_time_utc - pause_start_time).total_seconds() / 60
-
-        new_record = TimeRecordModel(
-            worker_id=worker_id,
-            worker_name=worker_name,
-            timestamp=current_time_utc,
-            type="pause_end",
-            recorded_by=current_user.username,
-            company_id=credentials.company_id,
-            company_name=company_name,
-            pause_type_id=last_record.get("pause_type_id"),
-            pause_type_name=last_record.get("pause_type_name"),
-            pause_counts_as_work=last_record.get("pause_counts_as_work"),
-            duration_minutes=pause_duration_minutes
-        )
-
-        record_data = new_record.model_dump()
-        record_data["created_at"] = current_time_utc
-
-        result = await db.TimeRecords.insert_one(record_data)
-        created_record = await db.TimeRecords.find_one({"_id": result.inserted_id})
-
-        logger.info(
-            f"Pause ended: worker={worker_name}, pause_type={last_record.get('pause_type_name')}, "
-            f"duration={pause_duration_minutes:.2f} minutes"
-        )
-
-        record_data_response = {**convert_id(created_record)}
-        record_data_response["record_type"] = "pause_end"
-        record_data_response["timestamp"] = ensure_utc_aware(created_record.get("timestamp"))
-
-        return TimeRecordResponse(**record_data_response)
-
-    elif last_record["type"] == "pause_end":
-        # ========================================
-        # CASE 4: After PAUSE_END → can be PAUSE_START or EXIT
-        # ========================================
-
-        if credentials.action == "pause_start":
-            # New pause (same flow as after entry)
-            if not credentials.pause_type_id:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Debes seleccionar un tipo de pausa"
-                )
-
-            try:
-                pause_type = await db.PauseTypes.find_one({
-                    "_id": ObjectId(credentials.pause_type_id),
-                    "company_ids": credentials.company_id,
-                    "deleted_at": None
-                })
-            except Exception:
-                pause_type = None
-
-            if not pause_type:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Tipo de pausa no válido"
-                )
-
-            new_record = TimeRecordModel(
-                worker_id=worker_id,
-                worker_name=worker_name,
-                timestamp=current_time_utc,
-                type="pause_start",
-                recorded_by=current_user.username,
-                company_id=credentials.company_id,
-                company_name=company_name,
-                pause_type_id=credentials.pause_type_id,
-                pause_type_name=pause_type["name"],
-                pause_counts_as_work=(pause_type["type"] == "inside_shift")
-            )
-
-            record_data = new_record.model_dump()
-            record_data["created_at"] = current_time_utc
-
-            result = await db.TimeRecords.insert_one(record_data)
-            created_record = await db.TimeRecords.find_one({"_id": result.inserted_id})
-
-            record_data_response = {**convert_id(created_record)}
-            record_data_response["record_type"] = "pause_start"
-            record_data_response["timestamp"] = ensure_utc_aware(created_record.get("timestamp"))
-
-            return TimeRecordResponse(**record_data_response)
-
-        else:
-            # EXIT (find original entry)
-            entry_record = await db.TimeRecords.find_one(
-                {
-                    "worker_id": worker_id,
-                    "company_id": credentials.company_id,
-                    "type": "entry",
-                    "created_at": {"$lt": last_record["created_at"]}
-                },
-                sort=[("created_at", -1)]
-            )
-
-            if not entry_record:
+        elif action == "pause_end":
+            op = prev.get("open_pause")
+            if not op:
+                # State doc was inconsistent — revert and surface 500
+                await revert_shift_state(worker_id, credentials.company_id, prev, version)
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="No se encontró registro de entrada"
+                    detail="Estado de pausa inconsistente"
                 )
-
-            entry_time = ensure_utc_aware(entry_record["timestamp"])
-
-            duration_minutes = await TimeCalculationService.calculate_duration_with_pauses(
-                worker_id=worker_id,
-                company_id=credentials.company_id,
-                entry_time=entry_time,
-                exit_time=current_time_utc
-            )
-
+            pause_start_time = ensure_utc_aware(op["pause_start_time"])
+            pause_duration_minutes = (current_time_utc - pause_start_time).total_seconds() / 60
             new_record = TimeRecordModel(
                 worker_id=worker_id,
                 worker_name=worker_name,
                 timestamp=current_time_utc,
-                duration_minutes=duration_minutes,
+                type="pause_end",
+                recorded_by=current_user.username,
+                company_id=credentials.company_id,
+                company_name=company_name,
+                pause_type_id=op["pause_type_id"],
+                pause_type_name=op["pause_type_name"],
+                pause_counts_as_work=op["pause_counts_as_work"],
+                duration_minutes=pause_duration_minutes,
+            )
+            logger.info(
+                f"Pause ended: worker={worker_name}, pause_type={op.get('pause_type_name')}, "
+                f"duration={pause_duration_minutes:.2f} minutes"
+            )
+
+        elif action == "exit":
+            entry_time_raw = prev.get("entry_time")
+            if not entry_time_raw:
+                # State doc was inconsistent — revert and surface 500
+                await revert_shift_state(worker_id, credentials.company_id, prev, version)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="No se encontró la entrada del turno"
+                )
+            entry_time = ensure_utc_aware(entry_time_raw)
+            # calculate_duration_with_pauses reads only CLOSED pauses for this shift.
+            # Those are immutable at this point (state is already logged_out), so
+            # this read is safe — no race with concurrent clock-ins.
+            duration_minutes = await TimeCalculationService.calculate_duration_with_pauses(
+                worker_id=worker_id,
+                company_id=credentials.company_id,
+                entry_time=entry_time,
+                exit_time=current_time_utc,
+            )
+            new_record = TimeRecordModel(
+                worker_id=worker_id,
+                worker_name=worker_name,
+                timestamp=current_time_utc,
                 type="exit",
                 recorded_by=current_user.username,
                 company_id=credentials.company_id,
-                company_name=company_name
+                company_name=company_name,
+                duration_minutes=duration_minutes,
             )
 
-            record_data = new_record.model_dump()
-            record_data["created_at"] = current_time_utc
+        # PASO E — insert the TimeRecord (source of truth)
+        record_data = new_record.model_dump()
+        record_data["created_at"] = current_time_utc
+        result = await db.TimeRecords.insert_one(record_data)
 
-            result = await db.TimeRecords.insert_one(record_data)
-            created_record = await db.TimeRecords.find_one({"_id": result.inserted_id})
-
-            record_data_response = {**convert_id(created_record)}
-            record_data_response["record_type"] = "exit"
-            record_data_response["timestamp"] = ensure_utc_aware(created_record.get("timestamp"))
-
-            return TimeRecordResponse(**record_data_response)
-
-    else:
+    except HTTPException:
+        raise
+    except Exception as insert_exc:
+        # PASO F — compensate with fencing token
+        # NOTE: si insert_one commiteó en el servidor pero el cliente vio timeout, el revert deja un TimeRecord huérfano. Riesgo inherente al patrón sin transacciones (MongoDB standalone).
+        try:
+            await revert_shift_state(worker_id, credentials.company_id, prev, version)
+        except Exception as revert_exc:
+            logger.error(
+                f"CRITICAL: insert falló Y la reversión de estado falló. "
+                f"worker={worker_id} company={credentials.company_id} action={action} "
+                f"insert_error={insert_exc!r} revert_error={revert_exc!r}"
+            )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Estado del registro no reconocido: {last_record['type']}"
+            detail="Error interno al registrar el fichaje. Inténtelo de nuevo."
         )
+
+    # PASO G — response (same structure as existing code)
+    created_record = await db.TimeRecords.find_one({"_id": result.inserted_id})
+    record_data_response = {**convert_id(created_record)}
+    record_data_response["record_type"] = action
+    record_data_response["timestamp"] = ensure_utc_aware(created_record.get("timestamp"))
+    return TimeRecordResponse(**record_data_response)
 
 @router.get("/time-records/{worker_id}/latest", response_model=TimeRecordResponse)
 async def get_latest_time_record(

@@ -72,8 +72,17 @@ async def init_db():
         await db.SmsLogs.create_index([("company_id", 1), ("created_at", 1)])
         await db.SmsLogs.create_index([("worker_id", 1), ("time_record_entry_id", 1), ("reminder_number", 1)])
 
+        # Index for WorkerShiftStates (CAS guard — must be unique per worker+company)
+        await db.WorkerShiftStates.create_index(
+            [("worker_id", 1), ("company_id", 1)],
+            unique=True,
+            name="worker_company_unique",
+        )
+
     except Exception as e:
-        print(f"Error initializing database: {e}")
+        # El guard atómico de fichaje depende del índice único de WorkerShiftStates.
+        # Si no se crea, la API no debe arrancar: fallaría en abierto (vuelve la carrera).
+        raise RuntimeError(f"Fallo crítico inicializando índices: {e}") from e
 
 
 async def init_default_settings():

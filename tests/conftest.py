@@ -4,6 +4,7 @@ Configuración global de fixtures para tests de integración.
 IMPORTANTE: Estos tests se ejecutan contra una BD real (test database).
 Los datos se crean y eliminan en cada sesión de tests.
 """
+import asyncio
 import os
 import pytest
 from typing import AsyncGenerator, Dict
@@ -20,6 +21,22 @@ os.environ["DB_NAME"] = DB_NAME
 os.environ["SECRET_KEY"] = os.getenv("SECRET_KEY", "test_secret_key_for_testing_only")
 
 from api.main import app
+
+
+@pytest.fixture(scope="session")
+def event_loop():
+    """
+    Session-scoped event loop.
+
+    The app binds a single module-global Motor client (api.database.db) at import
+    time. With the default per-test event loop, that client stays bound to the
+    first test's loop; once it closes, any later integration test using the global
+    db fails with "Event loop is closed". A session-scoped loop keeps the global
+    client valid across the whole suite.
+    """
+    loop = asyncio.new_event_loop()
+    yield loop
+    loop.close()
 
 
 @pytest.fixture(scope="function")
