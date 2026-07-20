@@ -281,6 +281,10 @@ async def anonymize_worker_data(
         }
     )
 
+    # Remove shift state (no PII, but an anonymized worker can no longer clock in).
+    # delete_many because a worker may have docs across multiple companies.
+    await db.WorkerShiftStates.delete_many({"worker_id": worker_id})
+
     return AnonymizeResponse(
         message="Datos del trabajador anonimizados correctamente. Los registros de jornada se conservan de forma anónima según la obligación legal de 4 años.",
         anonymized_at=anonymize_timestamp.isoformat(),
