@@ -8,6 +8,7 @@ import pytz
 from ..models.time_records import (
     TimeRecordModel,
     TimeRecordWorkerCredentials,
+    CreateTimeRecordCredentials,
     TimeRecordResponse,
     TimeRecordHistoryResponse,
     WorkerCurrentStatusResponse,
@@ -18,7 +19,7 @@ from ..database import db, convert_id
 from ..auth.auth_handler import verify_password
 from ..auth.permissions import PermissionChecker
 from ..services.time_calculation_service import TimeCalculationService
-from .shift_state import transition_shift_state, _revert_shift_state, _TRANSITIONS
+from .shift_state import transition_shift_state, revert_shift_state
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -37,7 +38,7 @@ def ensure_utc_aware(dt: Optional[datetime]) -> Optional[datetime]:
 
 @router.post("/time-records/", response_model=TimeRecordResponse, status_code=status.HTTP_201_CREATED)
 async def create_time_record(
-    credentials: TimeRecordWorkerCredentials,
+    credentials: CreateTimeRecordCredentials,
     current_user: APIUser = Depends(PermissionChecker("create_time_records"))
 ):
     # 1. Validate company_id is provided
@@ -99,13 +100,8 @@ async def create_time_record(
     #    the TimeRecord share the same instant.
     current_time_utc = datetime.now(dt_timezone.utc)
 
-    # PASO A — action is mandatory (Opción A). action=None → 400.
+    # PASO A — action is validated by Pydantic (Literal field); always a known value here.
     action = credentials.action
-    if action not in _TRANSITIONS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Debes indicar una acción válida: entry, exit, pause_start o pause_end."
-        )
 
     # PASO B — business validations PRE-CAS (no state or TimeRecords touched)
     pause_info = None
@@ -171,7 +167,7 @@ async def create_time_record(
             op = prev.get("open_pause")
             if not op:
                 # State doc was inconsistent — revert and surface 500
-                await _revert_shift_state(worker_id, credentials.company_id, prev, version)
+                await revert_shift_state(worker_id, credentials.company_id, prev, version)
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail="Estado de pausa inconsistente"
@@ -200,7 +196,7 @@ async def create_time_record(
             entry_time_raw = prev.get("entry_time")
             if not entry_time_raw:
                 # State doc was inconsistent — revert and surface 500
-                await _revert_shift_state(worker_id, credentials.company_id, prev, version)
+                await revert_shift_state(worker_id, credentials.company_id, prev, version)
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail="No se encontró la entrada del turno"
@@ -235,8 +231,9 @@ async def create_time_record(
         raise
     except Exception as insert_exc:
         # PASO F — compensate with fencing token
+        # NOTE: si insert_one commiteó en el servidor pero el cliente vio timeout, el revert deja un TimeRecord huérfano. Riesgo inherente al patrón sin transacciones (MongoDB standalone).
         try:
-            await _revert_shift_state(worker_id, credentials.company_id, prev, version)
+            await revert_shift_state(worker_id, credentials.company_id, prev, version)
         except Exception as revert_exc:
             logger.error(
                 f"CRITICAL: insert falló Y la reversión de estado falló. "

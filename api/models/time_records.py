@@ -1,5 +1,5 @@
 from pydantic import BaseModel, AwareDatetime, EmailStr
-from typing import Optional
+from typing import Literal, Optional
 from datetime import date
 
 class TimeRecordModel(BaseModel):
@@ -30,9 +30,15 @@ class TimeRecordWorkerCredentials(BaseModel):
     timezone: Optional[str] = "UTC"  # Zona horaria del cliente (para referencia, no se guarda)
     company_id: str  # ID de la empresa para la cual se registra el tiempo
 
-    # Campos para pausas
+    # Campos para pausas. action es opcional aquí porque este modelo lo comparten
+    # endpoints que solo consultan (p.ej. current-status) y no fichan.
     action: Optional[str] = None  # "entry" | "exit" | "pause_start" | "pause_end"
     pause_type_id: Optional[str] = None  # Requerido si action = "pause_start"
+
+
+class CreateTimeRecordCredentials(TimeRecordWorkerCredentials):
+    """Credenciales para crear un fichaje: action es obligatorio y tipado."""
+    action: Literal["entry", "exit", "pause_start", "pause_end"]
 
 class WorkerHistoryQuery(BaseModel):
     email: str  # Worker email

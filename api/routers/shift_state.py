@@ -6,6 +6,7 @@ concurrent clock-in requests from multiple API replicas or double-taps cannot
 both succeed. The denormalized `entry_time` and `open_pause` fields eliminate
 any subsequent read of TimeRecords on the critical path (see plan §7).
 """
+import logging
 from datetime import datetime
 from uuid import uuid4
 
@@ -15,8 +16,10 @@ from pymongo.errors import DuplicateKeyError
 
 from ..database import db
 
+logger = logging.getLogger(__name__)
+
 # (expected_state, new_state) per action
-_TRANSITIONS: dict[str, tuple[str, str]] = {
+TRANSITIONS: dict[str, tuple[str, str]] = {
     "entry":       ("logged_out", "logged_in"),
     "pause_start": ("logged_in",  "on_pause"),
     "pause_end":   ("on_pause",   "logged_in"),
@@ -41,7 +44,7 @@ async def transition_shift_state(
     Raises HTTPException(409) if the transition is invalid or the CAS is lost
     (another concurrent request already advanced the state).
     """
-    expected, new_state = _TRANSITIONS[action]
+    expected, new_state = TRANSITIONS[action]
     version = str(uuid4())
 
     set_fields: dict = {"state": new_state, "version": version, "updated_at": now}
@@ -124,12 +127,12 @@ async def _conflict_message(worker_id: str, company_id: str, action: str) -> str
     return table.get((action, current), "Acción no válida para el estado actual de la jornada.")
 
 
-async def _revert_shift_state(
+async def revert_shift_state(
     worker_id: str,
     company_id: str,
     prev_doc: dict,
     version: str,
-) -> None:
+) -> int:
     """
     Restore the state document to its pre-CAS image after a failed insert_one.
 
@@ -137,11 +140,20 @@ async def _revert_shift_state(
     transitioned (version changed), the filter does not match → no-op → correct
     (we must not overwrite a legitimately advanced state).
 
-    Does not re-raise; the caller logs CRITICAL if modified_count == 0 and
-    the insert also failed (double-failure case).
+    Logs an error-level CRITICAL message when modified_count == 0 (no-op), which
+    means the state advanced past the CAS token before the revert could fire — a
+    data-consistency anomaly that requires manual review.
+
+    Returns modified_count (1 on success, 0 on no-op). Does not re-raise.
     """
     restore = {k: v for k, v in prev_doc.items() if k != "_id"}
-    await db.WorkerShiftStates.replace_one(
+    result = await db.WorkerShiftStates.replace_one(
         {"worker_id": worker_id, "company_id": company_id, "version": version},
         restore,
     )
+    if result.modified_count == 0:
+        logger.error(
+            f"CRITICAL: revert no-op — el estado avanzó tras el CAS fallido. "
+            f"worker={worker_id} company={company_id} version={version}"
+        )
+    return result.modified_count
