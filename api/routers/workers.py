@@ -21,6 +21,7 @@ from ..models.auth import APIUser
 from ..database import db, convert_id
 from ..auth.auth_handler import get_password_hash, verify_password
 from ..auth.permissions import PermissionChecker
+from ..auth.subscription_guard import require_active_subscription
 from ..services.email_service import email_service
 from ..utils.worker_auth import _authenticate_worker
 
@@ -591,7 +592,10 @@ async def reset_password(request: ResetPasswordRequest):
 
 
 @router.post("/workers/my-companies", status_code=status.HTTP_200_OK)
-async def get_worker_companies(request: WorkerCompaniesRequest):
+async def get_worker_companies(
+    request: WorkerCompaniesRequest,
+    _subscription: None = Depends(require_active_subscription)
+):
     """
     Get companies associated with a worker.
 
