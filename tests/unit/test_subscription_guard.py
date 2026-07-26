@@ -5,7 +5,7 @@ A minimal standalone FastAPI app is used so these tests do not require
 MongoDB or the full api.main application. Stripe is always mocked.
 """
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
@@ -54,7 +54,7 @@ def test_active_subscription_returns_200():
     env = _env({"STRIPE_API_KEY": "rk_test_123", "STRIPE_SUBSCRIPTION_ID": "sub_123"})
     status_obj = svc.SubscriptionStatus(status="active", current_period_end=None, days_remaining=None, mode="live")
     with patch("api.services.subscription_service.os.getenv", side_effect=lambda k, d=None: env.get(k, d)), \
-         patch("api.services.subscription_service.get_status", return_value=status_obj):
+         patch("api.services.subscription_service.get_status", new=AsyncMock(return_value=status_obj)):
         response = client.post("/protected")
 
     assert response.status_code == 200
@@ -64,7 +64,7 @@ def test_canceled_subscription_returns_402():
     env = _env({"STRIPE_API_KEY": "rk_test_123", "STRIPE_SUBSCRIPTION_ID": "sub_123"})
     status_obj = svc.SubscriptionStatus(status="canceled", current_period_end=None, days_remaining=None, mode="live")
     with patch("api.services.subscription_service.os.getenv", side_effect=lambda k, d=None: env.get(k, d)), \
-         patch("api.services.subscription_service.get_status", return_value=status_obj):
+         patch("api.services.subscription_service.get_status", new=AsyncMock(return_value=status_obj)):
         response = client.post("/protected")
 
     assert response.status_code == 402
@@ -77,7 +77,7 @@ def test_past_due_subscription_returns_200_grace_period():
     env = _env({"STRIPE_API_KEY": "rk_test_123", "STRIPE_SUBSCRIPTION_ID": "sub_123"})
     status_obj = svc.SubscriptionStatus(status="past_due", current_period_end=None, days_remaining=None, mode="live")
     with patch("api.services.subscription_service.os.getenv", side_effect=lambda k, d=None: env.get(k, d)), \
-         patch("api.services.subscription_service.get_status", return_value=status_obj):
+         patch("api.services.subscription_service.get_status", new=AsyncMock(return_value=status_obj)):
         response = client.post("/protected")
 
     assert response.status_code == 200

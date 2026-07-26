@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 import stripe
+from fastapi.concurrency import run_in_threadpool
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,12 @@ class SubscriptionStatus:
     current_period_end: Optional[int]
     days_remaining: Optional[int]
     mode: str
+    # Set to "refresh_failed" when this status could not be freshly verified
+    # against Stripe (transient error) — status/current_period_end/days_remaining
+    # are then either stale (last-known-good, cache preserved) or a fail-open
+    # placeholder if nothing was ever cached. Never fabricate a confirmed
+    # "active" to an admin explicitly asking to refresh.
+    error: Optional[str] = None
 
 
 # Module-level cache state.
@@ -76,16 +83,46 @@ def _fetch_from_stripe() -> SubscriptionStatus:
     )
 
 
-def get_status(force_refresh: bool = False) -> SubscriptionStatus:
+def _status_with_refresh_error() -> SubscriptionStatus:
+    """
+    Status returned when a Stripe fetch attempt (background refetch or
+    forced admin refresh) fails.
+
+    Never overwrites the cache. If a previous status is cached, returns it
+    as-is (stale but last-known) so the worker gate keeps applying it
+    consistently; otherwise falls back to the permissive status so fichaje
+    is never blocked on a transient incident with zero prior data. Either
+    way `error="refresh_failed"` is set so an admin-triggered refresh is
+    never mistaken for a confirmed "active".
+    """
+    if _cached_status is not None:
+        stale = _cached_status
+        return SubscriptionStatus(
+            status=stale.status,
+            current_period_end=stale.current_period_end,
+            days_remaining=stale.days_remaining,
+            mode=stale.mode,
+            error="refresh_failed",
+        )
+    fallback = _fail_open_status()
+    fallback.error = "refresh_failed"
+    return fallback
+
+
+async def get_status(force_refresh: bool = False) -> SubscriptionStatus:
     """
     Return the (cached) subscription status.
 
     force_refresh=True bypasses the cache and repopulates it — used by
     `GET /api/subscription/status?refresh=true` (D13, "Ya he pagado" button).
 
-    Fails open on any Stripe/network error: logs and returns a permissive
-    status, since fichaje (clocking in/out) is a legal obligation that a
-    transient Stripe incident must never block.
+    The Stripe call is synchronous/blocking, so it's offloaded to a thread
+    via `run_in_threadpool` to avoid stalling the event loop.
+
+    On any Stripe/network error, the worker-facing gate must never be
+    blocked by a transient incident, but a forced admin refresh must never
+    be reported as a confirmed "active" either — see `_status_with_refresh_error`.
+    The cache itself is never overwritten by a failed fetch.
     """
     global _cached_status, _cached_at
 
@@ -97,10 +134,10 @@ def get_status(force_refresh: bool = False) -> SubscriptionStatus:
         return _cached_status
 
     try:
-        fetched_status = _fetch_from_stripe()
+        fetched_status = await run_in_threadpool(_fetch_from_stripe)
     except Exception as e:
-        logger.error(f"[Subscription] Error fetching status from Stripe (fail-open): {e}")
-        return _fail_open_status()
+        logger.error(f"[Subscription] Error fetching status from Stripe: {e}")
+        return _status_with_refresh_error()
 
     _cached_status = fetched_status
     _cached_at = now

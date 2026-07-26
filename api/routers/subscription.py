@@ -34,15 +34,23 @@ async def get_subscription_status(
     if not subscription_service.is_enabled():
         return {"enabled": False}
 
-    current_status = subscription_service.get_status(force_refresh=refresh)
-    return {
+    current_status = await subscription_service.get_status(force_refresh=refresh)
+    message = (
+        "No se pudo verificar el estado ahora; inténtalo de nuevo."
+        if current_status.error
+        else _STATUS_MESSAGES.get(current_status.status, current_status.status)
+    )
+    response = {
         "enabled": True,
         "status": current_status.status,
         "current_period_end": current_status.current_period_end,
         "days_remaining": current_status.days_remaining,
-        "message": _STATUS_MESSAGES.get(current_status.status, current_status.status),
+        "message": message,
         "mode": current_status.mode,
     }
+    if current_status.error:
+        response["error"] = current_status.error
+    return response
 
 
 @router.get("/subscription/portal")
@@ -54,11 +62,20 @@ async def get_subscription_portal(
     if not subscription_service.is_enabled():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subscription not configured")
 
-    return_url = f"https://{request.url.hostname}/admin"
+    customer_id = os.getenv("STRIPE_CUSTOMER_ID")
+    if not customer_id:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="STRIPE_CUSTOMER_ID no configurado",
+        )
+
+    forwarded_host = request.headers.get("x-forwarded-host")
+    host = forwarded_host.split(",")[0].strip() if forwarded_host else request.url.hostname
+    return_url = f"https://{host}/admin"
 
     try:
         session = stripe.billing_portal.Session.create(
-            customer=os.getenv("STRIPE_CUSTOMER_ID"),
+            customer=customer_id,
             return_url=return_url,
             api_key=os.getenv("STRIPE_API_KEY"),
         )

@@ -23,7 +23,7 @@ async def require_active_subscription() -> None:
     if not subscription_service.is_enabled():
         return
 
-    current_status = subscription_service.get_status()
+    current_status = await subscription_service.get_status()
     if not subscription_service.is_worker_access_allowed(current_status):
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,

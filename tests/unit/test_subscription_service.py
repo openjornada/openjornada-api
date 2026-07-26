@@ -74,30 +74,31 @@ class TestIsEnabled:
 # ===========================================================================
 
 class TestGetStatus:
-    def test_disabled_returns_permissive_status_without_calling_stripe(self):
+    async def test_disabled_returns_permissive_status_without_calling_stripe(self):
         env = _env({})
         with patch("api.services.subscription_service.os.getenv", side_effect=lambda k, d=None: env.get(k, d)), \
              patch("api.services.subscription_service.stripe") as mock_stripe:
-            result = svc.get_status()
+            result = await svc.get_status()
 
         assert result.status == "active"
+        assert result.error is None
         mock_stripe.Subscription.retrieve.assert_not_called()
 
-    def test_enabled_calls_stripe_and_caches_result(self):
+    async def test_enabled_calls_stripe_and_caches_result(self):
         env = _env({"STRIPE_API_KEY": "rk_test_123", "STRIPE_SUBSCRIPTION_ID": "sub_123"})
         with patch("api.services.subscription_service.os.getenv", side_effect=lambda k, d=None: env.get(k, d)), \
              patch("api.services.subscription_service.stripe") as mock_stripe:
             mock_stripe.Subscription.retrieve.return_value = _stripe_subscription("active")
 
-            first = svc.get_status()
-            second = svc.get_status()
+            first = await svc.get_status()
+            second = await svc.get_status()
 
         assert first.status == "active"
         assert second.status == "active"
         # Second call within TTL must use the cache, not re-hit Stripe.
         mock_stripe.Subscription.retrieve.assert_called_once_with("sub_123", api_key="rk_test_123")
 
-    def test_cache_respects_ttl_and_refetches_after_expiry(self):
+    async def test_cache_respects_ttl_and_refetches_after_expiry(self):
         env = _env({"STRIPE_API_KEY": "rk_test_123", "STRIPE_SUBSCRIPTION_ID": "sub_123"})
         with patch("api.services.subscription_service.os.getenv", side_effect=lambda k, d=None: env.get(k, d)), \
              patch("api.services.subscription_service.stripe") as mock_stripe, \
@@ -105,39 +106,85 @@ class TestGetStatus:
             mock_stripe.Subscription.retrieve.return_value = _stripe_subscription("active")
 
             mock_monotonic.return_value = 0.0
-            svc.get_status()
+            await svc.get_status()
 
             # Still within the 600s TTL.
             mock_monotonic.return_value = 500.0
-            svc.get_status()
+            await svc.get_status()
             assert mock_stripe.Subscription.retrieve.call_count == 1
 
             # TTL expired -> must refetch.
             mock_monotonic.return_value = 700.0
-            svc.get_status()
+            await svc.get_status()
             assert mock_stripe.Subscription.retrieve.call_count == 2
 
-    def test_force_refresh_bypasses_cache(self):
+    async def test_force_refresh_bypasses_cache(self):
         env = _env({"STRIPE_API_KEY": "rk_test_123", "STRIPE_SUBSCRIPTION_ID": "sub_123"})
         with patch("api.services.subscription_service.os.getenv", side_effect=lambda k, d=None: env.get(k, d)), \
              patch("api.services.subscription_service.stripe") as mock_stripe:
             mock_stripe.Subscription.retrieve.return_value = _stripe_subscription("active")
 
-            svc.get_status()
-            svc.get_status(force_refresh=True)
+            await svc.get_status()
+            await svc.get_status(force_refresh=True)
 
         assert mock_stripe.Subscription.retrieve.call_count == 2
 
-    def test_stripe_error_fails_open(self):
+    async def test_stripe_error_fails_open(self):
         """A transient Stripe/network error must never block workers (fail-open)."""
         env = _env({"STRIPE_API_KEY": "rk_test_123", "STRIPE_SUBSCRIPTION_ID": "sub_123"})
         with patch("api.services.subscription_service.os.getenv", side_effect=lambda k, d=None: env.get(k, d)), \
              patch("api.services.subscription_service.stripe") as mock_stripe:
             mock_stripe.Subscription.retrieve.side_effect = RuntimeError("network down")
 
-            result = svc.get_status()
+            result = await svc.get_status()
 
         assert result.status == "active"
+
+    async def test_cold_cache_stripe_error_fails_open_with_error_flag(self):
+        """
+        No prior successful fetch (cold cache) + Stripe error: worker gate
+        must still fail open (status=active, allowed), but the error is
+        surfaced via `error` so an admin knows it wasn't actually verified.
+        """
+        env = _env({"STRIPE_API_KEY": "rk_test_123", "STRIPE_SUBSCRIPTION_ID": "sub_123"})
+        with patch("api.services.subscription_service.os.getenv", side_effect=lambda k, d=None: env.get(k, d)), \
+             patch("api.services.subscription_service.stripe") as mock_stripe:
+            mock_stripe.Subscription.retrieve.side_effect = RuntimeError("network down")
+
+            result = await svc.get_status()
+
+        assert result.status == "active"
+        assert result.error == "refresh_failed"
+        assert svc.is_worker_access_allowed(result) is True
+        # The failed fetch must not populate the cache.
+        assert svc._cached_status is None
+
+    async def test_forced_refresh_error_with_stale_cache_does_not_fabricate_active(self):
+        """
+        A stale cached `canceled` status plus a forced-refresh Stripe error
+        must NOT be reported as "active" to the admin. It must return the
+        last-known status (canceled) with error="refresh_failed", and must
+        not clear/overwrite the cache.
+        """
+        env = _env({"STRIPE_API_KEY": "rk_test_123", "STRIPE_SUBSCRIPTION_ID": "sub_123"})
+        with patch("api.services.subscription_service.os.getenv", side_effect=lambda k, d=None: env.get(k, d)), \
+             patch("api.services.subscription_service.stripe") as mock_stripe:
+            mock_stripe.Subscription.retrieve.return_value = _stripe_subscription("canceled")
+            first = await svc.get_status()
+            assert first.status == "canceled"
+
+            mock_stripe.Subscription.retrieve.side_effect = RuntimeError("network down")
+            refreshed = await svc.get_status(force_refresh=True)
+
+            assert refreshed.status == "canceled"
+            assert refreshed.error == "refresh_failed"
+            # Cache preserved untouched, so the (non-refresh) gate keeps seeing
+            # the same last-known "canceled" status -> workers stay blocked.
+            assert svc._cached_status.status == "canceled"
+            assert svc._cached_status.error is None
+            gate_status = await svc.get_status()
+            assert gate_status.status == "canceled"
+            assert svc.is_worker_access_allowed(gate_status) is False
 
 
 # ===========================================================================
