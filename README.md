@@ -105,6 +105,8 @@ EMAIL_APP_NAME=OpenJornada
 # SMS_UNLIMITED_BALANCE=0
 ```
 
+Stripe es opcional; sin claves la API funciona sin límites.
+
 ## 👥 Gestión de Usuarios API
 
 La API incluye un script CLI para gestionar usuarios administradores:

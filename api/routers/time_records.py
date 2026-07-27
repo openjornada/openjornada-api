@@ -18,6 +18,7 @@ from ..models.auth import APIUser
 from ..database import db, convert_id
 from ..auth.auth_handler import verify_password
 from ..auth.permissions import PermissionChecker
+from ..auth.subscription_guard import require_active_subscription
 from ..services.time_calculation_service import TimeCalculationService
 from .shift_state import transition_shift_state, revert_shift_state
 
@@ -39,7 +40,8 @@ def ensure_utc_aware(dt: Optional[datetime]) -> Optional[datetime]:
 @router.post("/time-records/", response_model=TimeRecordResponse, status_code=status.HTTP_201_CREATED)
 async def create_time_record(
     credentials: CreateTimeRecordCredentials,
-    current_user: APIUser = Depends(PermissionChecker("create_time_records"))
+    current_user: APIUser = Depends(PermissionChecker("create_time_records")),
+    _subscription: None = Depends(require_active_subscription)
 ):
     # 1. Validate company_id is provided
     if not credentials.company_id:
@@ -432,7 +434,10 @@ async def get_worker_time_records(
 
 
 @router.post("/time-records/current-status", response_model=WorkerCurrentStatusResponse)
-async def get_current_status(credentials: TimeRecordWorkerCredentials):
+async def get_current_status(
+    credentials: TimeRecordWorkerCredentials,
+    _subscription: None = Depends(require_active_subscription)
+):
     """
     Obtener estado actual del trabajador en una empresa.
 
@@ -628,7 +633,10 @@ async def get_current_status(credentials: TimeRecordWorkerCredentials):
 
 
 @router.post("/time-records/worker/history", response_model=List[TimeRecordResponse])
-async def get_worker_day_records(query: WorkerHistoryQuery):
+async def get_worker_day_records(
+    query: WorkerHistoryQuery,
+    _subscription: None = Depends(require_active_subscription)
+):
     """
     Get time records for authenticated worker within a date range.
 
