@@ -2,7 +2,7 @@ OpenJornada API - Backend Service
 Copyright (C) 2024 OpenJornada Contributors
 
 This component is part of the OpenJornada project:
-https://bitbucket.org/[YOUR-WORKSPACE]/projects/OPENJORNADA
+https://github.com/openjornada
 
 This software is licensed under the GNU Affero General Public License v3.0.
 See the LICENSE file for the full license text.
@@ -118,7 +118,7 @@ licensed under the AGPL-3.0 license.
 See CONTRIBUTING.md for contribution guidelines specific to this component.
 
 For general project contribution guidelines, see:
-https://bitbucket.org/[YOUR-WORKSPACE]/openjornada-core/src/main/CONTRIBUTING.md
+https://github.com/openjornada/openjornada-api/blob/main/CONTRIBUTING.md
 
 ===============================================================================
 
@@ -126,13 +126,13 @@ Contact & Support
 ===============================================================================
 
 For issues specific to the API component:
-https://bitbucket.org/[YOUR-WORKSPACE]/openjornada-api/issues
+https://github.com/openjornada/openjornada-api/issues
 
 For general project issues and documentation:
-https://bitbucket.org/[YOUR-WORKSPACE]/openjornada-core/issues
+https://github.com/openjornada
 
 For commercial support and consulting services:
-[YOUR CONTACT EMAIL]
+support@openjornada.es
 
 ===============================================================================
 
