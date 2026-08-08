@@ -1,7 +1,9 @@
 from datetime import datetime, timedelta
 from typing import Optional
-from jose import JWTError, jwt
-from passlib.context import CryptContext
+import jwt
+import bcrypt
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHash, VerifyMismatchError
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 import os
@@ -16,14 +18,26 @@ SECRET_KEY = os.getenv("SECRET_KEY", "default_secret_key")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 480))  # 8 hours default
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+_argon2_hasher = PasswordHasher()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/token")
 
-def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify a plaintext password against a stored hash.
 
-def get_password_hash(password):
-    return pwd_context.hash(password)
+    Supports both current Argon2 hashes and legacy bcrypt hashes created
+    before the migration away from passlib, so existing production
+    credentials keep working.
+    """
+    if hashed_password.startswith("$argon2"):
+        try:
+            return _argon2_hasher.verify(hashed_password, plain_password)
+        except (VerifyMismatchError, InvalidHash):
+            return False
+    return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
+
+def get_password_hash(password: str) -> str:
+    """Hash a plaintext password using Argon2 (current default scheme)."""
+    return _argon2_hasher.hash(password)
 
 async def get_user(username: str):
     user_dict = await db.APIUsers.find_one({"username": username})
@@ -73,7 +87,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
         if username is None:
             raise credentials_exception
         token_data = TokenData(username=username)
-    except JWTError:
+    except jwt.PyJWTError:
         raise credentials_exception
     
     user = await get_user(username=token_data.username)
