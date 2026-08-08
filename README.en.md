@@ -80,9 +80,15 @@ API_HOST=0.0.0.0
 DEBUG=True
 
 # Security
-SECRET_KEY=your_secret_key_here
+SECRET_KEY=your_secret_key_here  # REQUIRED: the API refuses to start if missing/empty
 ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRE_MINUTES=30
+
+# Login rate limiting (POST /api/token)
+LOGIN_RATE_LIMIT=5/minute
+
+# CORS: comma-separated allowed origins (never "*" combined with credentials)
+CORS_ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000,http://localhost:3001
 
 # Database
 MONGO_URL=mongodb://mongodb:27017

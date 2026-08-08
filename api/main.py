@@ -6,12 +6,16 @@ import uvicorn
 import os
 import logging
 from dotenv import load_dotenv
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 from .database import init_db, init_default_settings
 from .routers import workers, time_records, auth, incidents, settings, companies, pause_types, change_requests, gdpr, backups, reports
 from .routers import sms, subscription
 from .services.scheduler_service import scheduler_service
 from .services.sms_service import sms_service
+from .utils.rate_limit import limiter
 
 load_dotenv()
 
@@ -33,6 +37,22 @@ async def lifespan(app: FastAPI):
     await sms_service.close()
 
 
+DEFAULT_DEV_CORS_ORIGINS = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://localhost:3001",
+]
+
+
+def get_cors_allowed_origins() -> list[str]:
+    """Return the CORS allowlist from `CORS_ALLOWED_ORIGINS` (comma-separated),
+    falling back to a local-development default. Never returns `["*"]`."""
+    origins_env = os.getenv("CORS_ALLOWED_ORIGINS")
+    if origins_env:
+        return [origin.strip() for origin in origins_env.split(",") if origin.strip()]
+    return DEFAULT_DEV_CORS_ORIGINS
+
+
 app = FastAPI(
     title="Time Tracking API",
     description="API for tracking workers' time entries",
@@ -44,10 +64,15 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Rate limiting (login brute-force protection)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
+
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=get_cors_allowed_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

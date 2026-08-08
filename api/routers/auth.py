@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from datetime import timedelta, datetime
 import secrets
@@ -16,12 +16,14 @@ from ..auth.permissions import PermissionChecker
 from ..models.auth import Token, APIUserCreate, APIUser, ForgotPasswordRequest, ResetPasswordRequest
 from ..database import db, convert_id
 from ..services.email_service import email_service
+from ..utils.rate_limit import limiter, LOGIN_RATE_LIMIT
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 @router.post("/token", response_model=Token)
-async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
+@limiter.limit(LOGIN_RATE_LIMIT)
+async def login_for_access_token(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
     # Note: form_data.username can contain either username or email
     user = await authenticate_user(form_data.username, form_data.password)
     if not user:

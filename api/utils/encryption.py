@@ -2,19 +2,19 @@
 Encryption utility for sensitive credentials (S3 keys, SFTP passwords, etc.)
 Uses Fernet symmetric encryption derived from SECRET_KEY.
 """
-import os
 import base64
 import hashlib
 from cryptography.fernet import Fernet
+
+from .secrets import SECRET_KEY
 
 
 class CredentialEncryption:
     """Handles encryption/decryption of sensitive credentials."""
 
     def __init__(self):
-        secret_key = os.getenv("SECRET_KEY", "default-secret-key-change-me")
         # Derive a 32-byte key from SECRET_KEY using SHA256
-        key_bytes = hashlib.sha256(secret_key.encode()).digest()
+        key_bytes = hashlib.sha256(SECRET_KEY.encode()).digest()
         # Fernet requires base64-encoded 32-byte key
         self._fernet = Fernet(base64.urlsafe_b64encode(key_bytes))
 

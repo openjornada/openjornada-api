@@ -21,6 +21,13 @@ os.environ["DB_NAME"] = DB_NAME
 os.environ["SECRET_KEY"] = os.getenv("SECRET_KEY", "test_secret_key_for_testing_only")
 
 from api.main import app
+from api.utils.rate_limit import limiter
+
+# Login rate limiting is disabled by default for the suite: many fixtures
+# (e.g. admin_token) call POST /api/token once per test, which would trip
+# the real per-minute limit across an entire session. The dedicated
+# rate-limit tests re-enable it for the duration of a single test.
+limiter.enabled = False
 
 
 @pytest.fixture(scope="session")
