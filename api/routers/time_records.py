@@ -20,6 +20,7 @@ from ..auth.auth_handler import verify_password
 from ..auth.permissions import PermissionChecker
 from ..auth.subscription_guard import require_active_subscription
 from ..services.time_calculation_service import TimeCalculationService
+from ..services.integrity_service import IntegrityService
 from .shift_state import transition_shift_state, revert_shift_state
 
 router = APIRouter()
@@ -227,6 +228,7 @@ async def create_time_record(
         # PASO E — insert the TimeRecord (source of truth)
         record_data = new_record.model_dump()
         record_data["created_at"] = current_time_utc
+        record_data["integrity_hash"] = IntegrityService.compute_record_hash(record_data)
         result = await db.TimeRecords.insert_one(record_data)
 
     except HTTPException:

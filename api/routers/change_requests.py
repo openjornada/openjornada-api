@@ -18,6 +18,7 @@ from ..auth.auth_handler import verify_password
 from ..auth.permissions import PermissionChecker
 from ..services.change_request_validator import ChangeRequestValidator
 from ..services.email_service import EmailService
+from ..services.integrity_service import IntegrityService
 from ..services.time_calculation_service import TimeCalculationService
 from ..utils.worker_auth import _authenticate_worker, _verify_worker_company_access
 
@@ -46,6 +47,22 @@ def ensure_utc_aware(dt: Optional[datetime]) -> Optional[datetime]:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=dt_timezone.utc)
     return dt
+
+
+async def _recompute_integrity_hash(record_id: ObjectId) -> None:
+    """
+    Recompute and persist ``integrity_hash`` for a TimeRecord from its
+    current stored fields. Used after an approved change-request mutates a
+    hashed field, so a legitimate correction doesn't read as tampering.
+    """
+    record = await db.TimeRecords.find_one({"_id": record_id})
+    if record is None:
+        return
+    new_hash = IntegrityService.compute_record_hash(record)
+    await db.TimeRecords.update_one(
+        {"_id": record_id},
+        {"$set": {"integrity_hash": new_hash}}
+    )
 
 
 def prepare_change_request_response(cr: dict) -> dict:
@@ -452,6 +469,9 @@ async def update_change_request(
                     {"_id": exit_record["_id"]},
                     {"$set": {"duration_minutes": duration}}
                 )
+                # duration_minutes is a hashed field: recompute the paired exit
+                # record's integrity_hash so it doesn't read as tampered.
+                await _recompute_integrity_hash(exit_record["_id"])
 
         elif record_type == "exit":
             # Find corresponding ENTRY
@@ -474,6 +494,11 @@ async def update_change_request(
                     {"_id": time_record_id},
                     {"$set": {"duration_minutes": duration}}
                 )
+
+        # The corrected record's own hashed fields (timestamp and, for exit
+        # records, duration_minutes) changed above: recompute its hash so
+        # this legitimate, audited correction still verifies as untampered.
+        await _recompute_integrity_hash(time_record_id)
 
         # Send acceptance email
         email_service = EmailService()

@@ -192,6 +192,9 @@ class RecordIntegrity(BaseModel):
     integrity_hash: str    # Hash stored in the database at creation time
     computed_hash: str     # Hash recomputed from current record fields
     verified: bool         # True when integrity_hash == computed_hash
+    status: Optional[Literal["verified", "tampered", "legacy"]] = None
+    # "verified": hash present and matches. "tampered": hash present but does
+    # not match. "legacy": record predates this capability, no hash stored.
 
 
 class WorkerExportRequest(BaseModel):
