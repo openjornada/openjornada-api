@@ -311,6 +311,7 @@ class TestTimeRecordIntegrity:
                 headers=admin_headers,
             )
             assert resp.status_code == 201, resp.text
+            exit_id = resp.json()["id"]
 
             new_entry_timestamp = entry_timestamp - timedelta(minutes=5)
 
@@ -346,6 +347,15 @@ class TestTimeRecordIntegrity:
             assert resp.status_code == 200, resp.text
             body = resp.json()
             assert body["verified"] is True, f"corrected record failed verification: {body}"
+            assert body["status"] == "verified"
+
+            resp = await async_client.get(
+                f"/api/reports/integrity/{exit_id}",
+                headers=admin_headers,
+            )
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert body["verified"] is True, f"paired exit record failed verification: {body}"
             assert body["status"] == "verified"
 
         finally:
