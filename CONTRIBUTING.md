@@ -16,7 +16,7 @@ Thank you for your interest in contributing to the OpenJornada API component!
 ### Prerequisites
 
 - Python 3.11+
-- MongoDB 6.0+
+- MongoDB 7.0+
 - Docker (optional, recommended)
 
 ### Local Setup

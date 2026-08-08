@@ -1,7 +1,6 @@
 from fastapi import APIRouter, HTTPException, status, Depends
 from typing import List
 from datetime import datetime, timedelta
-from passlib.context import CryptContext
 from bson.objectid import ObjectId
 import secrets
 import logging
@@ -26,7 +25,6 @@ from ..services.email_service import email_service
 from ..utils.worker_auth import _authenticate_worker
 
 router = APIRouter()
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 logger = logging.getLogger(__name__)
 
 @router.post("/workers/", response_model=WorkerResponse, status_code=status.HTTP_201_CREATED)
