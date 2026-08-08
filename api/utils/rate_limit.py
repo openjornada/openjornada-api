@@ -17,12 +17,15 @@ def get_client_ip(request: Request) -> str:
     """Return the client's real IP address.
 
     The API runs behind a Caddy reverse proxy, so `request.client.host` is
-    always Caddy's address. Honor the `X-Forwarded-For`/`X-Real-IP`
-    headers Caddy sets instead, falling back to the direct peer address.
+    always Caddy's address. Caddy overwrites `X-Real-IP` with the true peer
+    address (`{http.request.remote.host}`) on every request, so that header
+    cannot be forged by the client and is the only one we trust.
+
+    `X-Forwarded-For` is deliberately NOT used: a client can send its own
+    `X-Forwarded-For` and Caddy only appends the real IP after it, so
+    `X-Forwarded-For.split(",")[0]` is attacker-controlled and would let a
+    client bypass the per-IP login rate limit by rotating fake values.
     """
-    forwarded_for = request.headers.get("X-Forwarded-For")
-    if forwarded_for:
-        return forwarded_for.split(",")[0].strip()
     real_ip = request.headers.get("X-Real-IP")
     if real_ip:
         return real_ip.strip()
