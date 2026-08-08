@@ -11,10 +11,10 @@ from dotenv import load_dotenv
 
 from ..database import db
 from ..models.auth import TokenData, APIUserInDB, convert_mongodb_doc
+from ..utils.secrets import SECRET_KEY
 
 load_dotenv()
 
-SECRET_KEY = os.getenv("SECRET_KEY", "default_secret_key")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 480))  # 8 hours default
 
