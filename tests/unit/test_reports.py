@@ -179,6 +179,119 @@ class TestIntegrityService:
         expected = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
         assert IntegrityService.compute_record_hash(record) == expected
 
+    def test_compute_record_hash_naive_and_aware_utc_equal(self):
+        """The same instant hashes identically whether naive or UTC-aware.
+
+        Regression: Motor may return naive datetimes for values that were
+        written as UTC-aware (datetime.now(timezone.utc)). Both must produce
+        the same digest or the hash breaks on every write->read round-trip.
+        """
+        aware = datetime(2026, 1, 15, 8, 0, 0, tzinfo=dt_timezone.utc)
+        naive = datetime(2026, 1, 15, 8, 0, 0)  # same instant, no tzinfo
+        record_aware = {
+            "worker_id": "w1", "company_id": "c1", "type": "entry",
+            "timestamp": aware, "duration_minutes": None, "created_at": aware,
+        }
+        record_naive = {
+            "worker_id": "w1", "company_id": "c1", "type": "entry",
+            "timestamp": naive, "duration_minutes": None, "created_at": naive,
+        }
+        assert IntegrityService.compute_record_hash(record_aware) == IntegrityService.compute_record_hash(record_naive)
+
+    def test_compute_record_hash_stable_across_mongo_round_trip(self):
+        """Hash computed pre-insert equals hash recomputed post read-back.
+
+        Simulates MongoDB's actual behaviour: BSON dates only have
+        millisecond precision, and Motor returns naive UTC datetimes. A
+        microsecond-precision, timezone-aware Python datetime (as produced by
+        datetime.now(timezone.utc)) must still hash the same before and
+        after that round-trip.
+        """
+        write_time = datetime(2026, 1, 15, 8, 0, 0, 123456, tzinfo=dt_timezone.utc)
+        record_at_write = {
+            "worker_id": "w1", "company_id": "c1", "type": "entry",
+            "timestamp": write_time, "duration_minutes": None, "created_at": write_time,
+        }
+        hash_at_write = IntegrityService.compute_record_hash(record_at_write)
+
+        # MongoDB truncates to millisecond precision and returns naive UTC.
+        read_back_time = datetime(2026, 1, 15, 8, 0, 0, 123000)
+        record_after_read = {
+            "worker_id": "w1", "company_id": "c1", "type": "entry",
+            "timestamp": read_back_time, "duration_minutes": None, "created_at": read_back_time,
+        }
+        hash_after_read = IntegrityService.compute_record_hash(record_after_read)
+
+        assert hash_at_write == hash_after_read
+
+    async def test_verify_record_integrity_verified(self):
+        """Untampered record with a matching stored hash verifies true."""
+        record = {
+            "_id": "fake_object_id",
+            "worker_id": "w1", "company_id": "c1", "type": "entry",
+            "timestamp": _make_utc(2026, 1, 15, 8, 0), "duration_minutes": None,
+            "created_at": _make_utc(2026, 1, 15, 8, 0),
+        }
+        record["integrity_hash"] = IntegrityService.compute_record_hash(record)
+
+        with patch("api.services.integrity_service.db") as mock_db, \
+             patch("api.services.integrity_service.ObjectId", return_value="fake_object_id"):
+            mock_db.TimeRecords.find_one = AsyncMock(return_value=record)
+            result = await IntegrityService.verify_record_integrity("507f1f77bcf86cd799439011")
+
+        assert result["verified"] is True
+        assert result["status"] == "verified"
+        assert result["stored_hash"] == result["computed_hash"]
+
+    async def test_verify_record_integrity_tampered(self):
+        """A stored hash that no longer matches the recomputed one reports tampered."""
+        record = {
+            "_id": "fake_object_id",
+            "worker_id": "w1", "company_id": "c1", "type": "entry",
+            "timestamp": _make_utc(2026, 1, 15, 8, 0), "duration_minutes": None,
+            "created_at": _make_utc(2026, 1, 15, 8, 0),
+            "integrity_hash": "deadbeef" * 8,  # deliberately wrong
+        }
+
+        with patch("api.services.integrity_service.db") as mock_db, \
+             patch("api.services.integrity_service.ObjectId", return_value="fake_object_id"):
+            mock_db.TimeRecords.find_one = AsyncMock(return_value=record)
+            result = await IntegrityService.verify_record_integrity("507f1f77bcf86cd799439011")
+
+        assert result["verified"] is False
+        assert result["status"] == "tampered"
+
+    async def test_verify_record_integrity_legacy(self):
+        """A record with no stored integrity_hash reports legacy, not tampered."""
+        record = {
+            "_id": "fake_object_id",
+            "worker_id": "w1", "company_id": "c1", "type": "entry",
+            "timestamp": _make_utc(2026, 1, 15, 8, 0), "duration_minutes": None,
+            "created_at": _make_utc(2026, 1, 15, 8, 0),
+            # no "integrity_hash" key at all
+        }
+
+        with patch("api.services.integrity_service.db") as mock_db, \
+             patch("api.services.integrity_service.ObjectId", return_value="fake_object_id"):
+            mock_db.TimeRecords.find_one = AsyncMock(return_value=record)
+            result = await IntegrityService.verify_record_integrity("507f1f77bcf86cd799439011")
+
+        assert result["verified"] is False
+        assert result["status"] == "legacy"
+        assert result["stored_hash"] == ""
+
+    async def test_verify_record_integrity_not_found(self):
+        """Verifying a non-existent record raises 404."""
+        from fastapi import HTTPException
+
+        with patch("api.services.integrity_service.db") as mock_db, \
+             patch("api.services.integrity_service.ObjectId", return_value="fake_object_id"):
+            mock_db.TimeRecords.find_one = AsyncMock(return_value=None)
+            with pytest.raises(HTTPException) as exc_info:
+                await IntegrityService.verify_record_integrity("507f1f77bcf86cd799439011")
+
+        assert exc_info.value.status_code == 404
+
     def test_compute_report_hash(self):
         """PDF/CSV bytes produce a valid 64-char hex SHA-256 string."""
         data = b"fake pdf content"

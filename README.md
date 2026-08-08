@@ -450,7 +450,20 @@ La API incluye un sistema completo de informes para cumplimiento laboral:
 
 ### Integridad y Cumplimiento
 
-- **Hash SHA-256** en cada registro de tiempo (campo `integrity_hash`)
+- **Hash SHA-256** calculado y almacenado (campo `integrity_hash`) en el momento de crear cada
+  registro de tiempo. `GET /api/reports/integrity/{record_id}` recalcula el hash a partir de los
+  campos actuales y lo compara con el almacenado, devolviendo un `status` explícito:
+  - `verified`: el registro no ha sido alterado desde su creación.
+  - `tampered`: un campo hasheado (`worker_id`, `company_id`, `type`, `timestamp`,
+    `duration_minutes`, `created_at`) fue modificado directamente en la base de datos sin pasar
+    por el flujo de corrección auditado.
+  - `legacy`: el registro es anterior a esta capability y no tiene `integrity_hash` almacenado
+    (no implica manipulación). Puede poblarse con `python -m api.manage_integrity backfill`.
+  - Las correcciones aprobadas vía change-request recalculan el hash automáticamente, así que
+    un cambio legítimo y auditado no se marca como manipulación.
+  - **Importante**: esto es evidencia de manipulación para terceros sin acceso a la base de
+    datos (auditores, trabajadores, la nube gestionada), no una garantía criptográfica frente a
+    quien administra el propio servidor/base de datos (autoalojado).
 - **Hash de exportaciones** devuelto en cabecera HTTP `X-Report-Hash`
 - **Firma mensual del trabajador**: El trabajador puede firmar sus registros mensuales; estado consultable (últimos 12 meses)
 - **Pie legal**: "Generado por OpenJornada. Registro conforme al art. 34.9 ET y RD-Ley 8/2019."

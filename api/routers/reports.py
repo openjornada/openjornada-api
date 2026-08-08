@@ -356,6 +356,7 @@ async def verify_record_integrity(
         integrity_hash=result["stored_hash"],
         computed_hash=result["computed_hash"],
         verified=result["verified"],
+        status=result["status"],
     )
 
 

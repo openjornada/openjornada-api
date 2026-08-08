@@ -125,7 +125,7 @@ class TestCompleteWorkflow:
             assert worker_in_db is not None, "Worker not found in database"
             assert worker_in_db["email"] == worker_data["email"]
             assert "hashed_password" in worker_in_db
-            assert worker_in_db["hashed_password"].startswith("$2b$")  # bcrypt
+            assert worker_in_db["hashed_password"].startswith("$argon2")  # argon2
             print("✓ Trabajador verificado en BD (password hasheado)")
 
             # ================================================================

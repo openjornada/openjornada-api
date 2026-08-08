@@ -24,7 +24,7 @@ services:
       - mongodb
 
   mongodb:
-    image: mongo:5.0
+    image: mongo:7.0
     volumes:
       - mongodb_data:/data/db
     deploy:
