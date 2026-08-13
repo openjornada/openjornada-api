@@ -133,7 +133,6 @@ async def _get_worker_or_404(worker_id: str) -> dict:
 @router.post("/", response_model=WorkerAbsenceResponse, status_code=status.HTTP_201_CREATED)
 async def create_absence_request(
     request_data: AbsenceRequestCreate,
-    current_user: APIUser = Depends(PermissionChecker("create_absences")),
 ) -> WorkerAbsenceResponse:
     """
     Create a new absence request. Worker authenticates with email/password.
@@ -408,7 +407,14 @@ async def _enabled_company_ids_for_worker(worker: dict) -> List[str]:
     company_ids = [str(cid) for cid in worker.get("company_ids", [])]
     if not company_ids:
         return []
-    oids = [ObjectId(cid) for cid in company_ids]
+    oids = []
+    for cid in company_ids:
+        try:
+            oids.append(ObjectId(cid))
+        except Exception:
+            pass
+    if not oids:
+        return []
     cursor = db.Companies.find(
         {"_id": {"$in": oids}, "deleted_at": None, "absence_management_enabled": True},
         {"_id": 1},
@@ -442,7 +448,7 @@ async def list_absences(
         query["start_date"] = {"$lte": _to_datetime(end_date)}
 
     results: List[AbsenceResponse] = []
-    async for doc in db.Absences.find(query).sort("created_at", -1):
+    async for doc in db.Absences.find(query).sort("created_at", -1).limit(500):
         results.append(AbsenceResponse(**prepare_absence_response(doc)))
     return results
 

@@ -10,6 +10,7 @@ import logging
 from datetime import date, datetime, timezone as dt_timezone
 
 from fastapi import APIRouter, Depends
+from pymongo.errors import DuplicateKeyError
 
 from ..auth.permissions import PermissionChecker
 from ..database import db, convert_id
@@ -82,10 +83,13 @@ async def _get_or_seed_policy(company_id: str) -> dict:
         "created_at": now,
         "updated_at": now,
     })
-    result = await db.AbsencePolicies.insert_one(policy_doc)
-    policy_doc["_id"] = result.inserted_id
-    logger.info("Seeded default absence policy for company=%s", company_id)
-    return policy_doc
+    try:
+        result = await db.AbsencePolicies.insert_one(policy_doc)
+        policy_doc["_id"] = result.inserted_id
+        logger.info("Seeded default absence policy for company=%s", company_id)
+        return policy_doc
+    except DuplicateKeyError:
+        return await db.AbsencePolicies.find_one({"company_id": company_id})
 
 
 @router.get(
