@@ -72,6 +72,14 @@ async def init_db():
         await db.SmsLogs.create_index([("company_id", 1), ("created_at", 1)])
         await db.SmsLogs.create_index([("worker_id", 1), ("time_record_entry_id", 1), ("reminder_number", 1)])
 
+        # Create indexes for Absences (no "one-pending" partial index: a worker
+        # can have several pending requests at once)
+        await db.Absences.create_index([("worker_id", 1), ("status", 1)])
+        await db.Absences.create_index([("company_id", 1), ("start_date", 1), ("end_date", 1)])
+
+        # Create index for AbsencePolicies (exactly one policy per company)
+        await db.AbsencePolicies.create_index("company_id", unique=True)
+
         # Index for WorkerShiftStates (CAS guard — must be unique per worker+company)
         await db.WorkerShiftStates.create_index(
             [("worker_id", 1), ("company_id", 1)],

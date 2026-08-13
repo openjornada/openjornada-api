@@ -8,7 +8,7 @@ grouping records by calendar day (local time) and for display purposes.
 
 import logging
 from collections import defaultdict
-from datetime import date, datetime, timezone as dt_timezone
+from datetime import date, datetime, timedelta, timezone as dt_timezone
 from typing import Optional
 
 import pytz
@@ -17,6 +17,7 @@ from fastapi import HTTPException, status
 
 from ..database import db
 from ..models.reports import (
+    AbsenceSummaryEntry,
     CompanyMonthlySummary,
     DailyWorkSummary,
     ModificationEntry,
@@ -109,6 +110,16 @@ class ReportService:
             )
             daily_details.append(day_summary)
 
+        # Absence & vacation management (Fase 1): only touch the report when the
+        # company has opted in (D9). Approved absences mark the affected days
+        # (creating a zero-hours day when there were no time records at all) so
+        # they don't count as missing work, and are listed in `absences`.
+        absences_summary: list[AbsenceSummaryEntry] = []
+        if company.get("absence_management_enabled", False):
+            absences_summary = await self._merge_absences_into_days(
+                company_id, worker_id, year, month, daily_details, worker_info, company_info,
+            )
+
         # Days that actually have at least one record are counted as worked.
         # We exclude days where the only situation is an open session with no
         # minutes logged yet (has_open_session=True, total_worked_minutes=0).
@@ -151,6 +162,7 @@ class ReportService:
             total_pause_minutes=total_pause,
             total_overtime_minutes=overtime,
             daily_details=daily_details,
+            absences=absences_summary,
             signature_status=signature_status,
             signed_at=signed_at,
             generated_at=datetime.now(dt_timezone.utc),
@@ -376,6 +388,98 @@ class ReportService:
             is_modified=is_modified,
             modifications=modifications,
         )
+
+    async def _merge_absences_into_days(
+        self,
+        company_id: str,
+        worker_id: str,
+        year: int,
+        month: int,
+        daily_details: list[DailyWorkSummary],
+        worker_info: dict,
+        company_info: dict,
+    ) -> list[AbsenceSummaryEntry]:
+        """
+        Mark days covered by an ACCEPTED absence as ``is_absence`` and append
+        a zero-hours day for any absence day that has no time records at all
+        (so it shows up in the report instead of being silently omitted).
+
+        Mutates ``daily_details`` in place (adds missing days, re-sorts).
+
+        Args:
+            company_id: MongoDB _id (string) of the company.
+            worker_id: MongoDB _id (string) of the worker.
+            year: Calendar year of the report.
+            month: Calendar month of the report (1-12).
+            daily_details: Days already built from time records; mutated in place.
+            worker_info: Dict with worker_id, worker_name, worker_id_number.
+            company_info: Dict with company_id, company_name.
+
+        Returns:
+            List of AbsenceSummaryEntry for the period (relación de ausencias).
+        """
+        month_start = date(year, month, 1)
+        month_end = (
+            date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
+        ) - timedelta(days=1)
+
+        query = {
+            "worker_id": worker_id,
+            "company_id": company_id,
+            "status": "accepted",
+            "start_date": {"$lte": datetime.combine(month_end, datetime.min.time())},
+            "end_date": {"$gte": datetime.combine(month_start, datetime.min.time())},
+        }
+        absences = await db.Absences.find(query).sort("start_date", 1).to_list(1_000)
+
+        day_index: dict[date, DailyWorkSummary] = {d.date: d for d in daily_details}
+        summary_entries: list[AbsenceSummaryEntry] = []
+
+        for absence in absences:
+            a_start = absence.get("start_date")
+            a_end = absence.get("end_date")
+            if isinstance(a_start, datetime):
+                a_start = a_start.date()
+            if isinstance(a_end, datetime):
+                a_end = a_end.date()
+            if a_start is None or a_end is None:
+                continue
+
+            absence_type_name = absence.get("absence_type_name") or absence.get("absence_type_code", "")
+
+            range_start = max(a_start, month_start)
+            range_end = min(a_end, month_end)
+
+            current = range_start
+            while current <= range_end:
+                existing = day_index.get(current)
+                if existing is not None:
+                    existing.is_absence = True
+                    existing.absence_type = absence_type_name
+                else:
+                    new_day = DailyWorkSummary(
+                        date=current,
+                        worker_id=worker_info["worker_id"],
+                        worker_name=worker_info["worker_name"],
+                        worker_id_number=worker_info["worker_id_number"],
+                        company_id=company_info["company_id"],
+                        company_name=company_info["company_name"],
+                        is_absence=True,
+                        absence_type=absence_type_name,
+                    )
+                    daily_details.append(new_day)
+                    day_index[current] = new_day
+                current += timedelta(days=1)
+
+            summary_entries.append(AbsenceSummaryEntry(
+                absence_type=absence_type_name,
+                start_date=a_start,
+                end_date=a_end,
+                days_computed=float(absence.get("days_computed", 0.0)),
+            ))
+
+        daily_details.sort(key=lambda d: d.date)
+        return summary_entries
 
     def _group_records_by_day(
         self, records: list[dict], tz: pytz.BaseTzInfo
