@@ -903,7 +903,7 @@ class TestWorkerLazySeedingConsistency:
              patch("api.utils.worker_auth.db", fake_db), \
              patch("api.routers.absence_policies.db", fake_db), \
              patch("api.utils.worker_auth.verify_password", return_value=True):
-            result = await absences_router.create_absence_request(request_data, current_user=dummy_admin)
+             result = await absences_router.create_absence_request(request_data)
 
         assert result.absence_type_code == "vacation"
         assert result.status == AbsenceStatus.PENDING.value
@@ -971,7 +971,7 @@ class TestWorkerLazySeedingConsistency:
              patch("api.utils.worker_auth.db", fake_db), \
              patch("api.utils.worker_auth.verify_password", return_value=True):
             with pytest.raises(HTTPException) as exc_info:
-                await absences_router.create_absence_request(request_data, current_user=dummy_admin)
+                 await absences_router.create_absence_request(request_data)
             assert exc_info.value.status_code == 403
         assert fake_db.AbsencePolicies.docs == []
 
