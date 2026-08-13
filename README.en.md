@@ -23,6 +23,7 @@ Backend API for the OpenJornada system, built with FastAPI and MongoDB.
 - **Integrity Verification**: SHA-256 hash for records and exports
 - **Monthly Worker Signature**: Digital signature of monthly records by the worker
 - **SMS Reminders**: Automatic SMS sending to workers who forget to clock out (LabsMobile provider)
+- **Absence and Leave Management**: Optional per-company module (`absence_management_enabled`) with configurable policy (days/year, working-day or calendar-day accrual, absence types, notice period, half-day/hours, blackout periods, max overlap), single-level request and approval with audit trail and atomic transition, on-the-fly balance, supporting documents in GridFS, validation (overlaps, blackout, balance) and integration with the monthly report (approved days do not count as missing work time). Endpoints `/api/absences` and `/api/absence-policies`
 
 ## 📋 Requirements
 
@@ -362,6 +363,27 @@ Backup records:
 - `GET /api/sms/history` - Sent SMS history
 - `DELETE /api/sms/history` - Clear history
 - `POST /api/workers/{id}/sms/send` - Send manual SMS to worker
+
+### Absence Policies (Admin only)
+- `GET /api/absence-policies/{company_id}` - Get the company's absence policy
+- `PUT /api/absence-policies/{company_id}` - Create/update the policy and its type catalog
+- `GET /api/absence-policies/{company_id}/types` - Company type catalog
+
+### Absences and Leave (Admin)
+- `GET /api/absences/` - List requests (filters: `company_id` required, `status`, `worker_id`, `start_date`, `end_date`)
+- `GET /api/absences/{id}` - Detail (includes `validation_errors` if pending)
+- `PATCH /api/absences/{id}` - Approve/reject
+- `GET /api/absences/calendar` - Team calendar (admin view)
+- `GET /api/absences/attachments/{attachment_id}` - Download supporting document
+
+### Absences and Leave (Worker - Request-based auth)
+- `POST /api/absences/` - Create request
+- `POST /api/absences/me` - List own requests
+- `POST /api/absences/me/balance` - Leave balance
+- `POST /api/absences/me/{id}/cancel` - Cancel (only if pending)
+- `POST /api/absences/me/calendar` - Team calendar (without type/reason)
+- `POST /api/absences/me/types` - Company type catalog
+- `POST /api/absences/attachments` - Upload supporting document (multipart) → `attachment_id`
 
 ## 💾 Backup System
 

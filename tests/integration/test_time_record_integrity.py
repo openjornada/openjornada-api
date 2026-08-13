@@ -303,7 +303,10 @@ class TestTimeRecordIntegrity:
             )
             assert resp.status_code == 201, resp.text
             entry_id = resp.json()["id"]
-            entry_timestamp = datetime.fromisoformat(resp.json()["timestamp"])
+            # Python 3.10's datetime.fromisoformat() can't parse a trailing "Z"
+            # (support for that was added in 3.11); normalize to an explicit
+            # UTC offset first.
+            entry_timestamp = datetime.fromisoformat(resp.json()["timestamp"].replace("Z", "+00:00"))
 
             resp = await async_client.post(
                 "/api/time-records/",

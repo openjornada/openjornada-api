@@ -20,6 +20,20 @@ os.environ["MONGO_URL"] = MONGO_URL
 os.environ["DB_NAME"] = DB_NAME
 os.environ["SECRET_KEY"] = os.getenv("SECRET_KEY", "test_secret_key_for_testing_only")
 
+# The app binds a single module-global Motor client (api.database.client) the
+# moment `api.database` is imported, and that client eagerly captures
+# `asyncio.get_event_loop()` at construction time — not lazily on first query.
+# We therefore create *our* test event loop and install it as the process
+# default *before* importing the app, so the global Motor client binds to it
+# from the start. This loop is then reused (not recreated) as the
+# pytest-asyncio `event_loop` fixture below: pytest-asyncio's fixture-setup
+# hook closes whatever loop was previously the process default whenever it
+# detects a *different* object being installed as the new one, which would
+# otherwise immediately invalidate the global Motor client before any test
+# runs. Reusing the same loop object makes that a no-op.
+_session_loop = asyncio.new_event_loop()
+asyncio.set_event_loop(_session_loop)
+
 from api.main import app
 from api.utils.rate_limit import limiter
 
@@ -33,17 +47,12 @@ limiter.enabled = False
 @pytest.fixture(scope="session")
 def event_loop():
     """
-    Session-scoped event loop.
-
-    The app binds a single module-global Motor client (api.database.db) at import
-    time. With the default per-test event loop, that client stays bound to the
-    first test's loop; once it closes, any later integration test using the global
-    db fails with "Event loop is closed". A session-scoped loop keeps the global
-    client valid across the whole suite.
+    Session-scoped event loop, reusing the loop already installed as the
+    process default above (see comment there for why it must be the same
+    object rather than a freshly created one).
     """
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
+    yield _session_loop
+    _session_loop.close()
 
 
 @pytest.fixture(scope="function")

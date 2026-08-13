@@ -646,7 +646,8 @@ async def get_worker_companies(
                         "id": str(company["_id"]),
                         "name": company["name"],
                         "created_at": company.get("created_at"),
-                        "updated_at": company.get("updated_at")
+                        "updated_at": company.get("updated_at"),
+                        "absence_management_enabled": company.get("absence_management_enabled", False)
                     })
             except Exception as e:
                 logger.warning(f"[MY-COMPANIES] Error loading company {company_id_str}: {e}")

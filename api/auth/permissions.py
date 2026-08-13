@@ -34,7 +34,11 @@ ROLE_PERMISSIONS = {
         "manage_inspection",
         "manage_sms_config",
         "view_sms_logs",
-        "view_sms_dashboard"
+        "view_sms_dashboard",
+        "view_absences",
+        "create_absences",
+        "manage_absences",
+        "manage_absence_policies"
     ],
     "inspector": [
         "view_reports",
@@ -44,7 +48,8 @@ ROLE_PERMISSIONS = {
     "tracker": [
         "create_time_records",
         "create_change_requests",
-        "view_pause_types"
+        "view_pause_types",
+        "create_absences"
     ]
 }
 
