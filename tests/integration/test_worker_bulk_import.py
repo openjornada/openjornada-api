@@ -124,7 +124,7 @@ class TestWorkerBulkImport:
         company_id = await _insert_company(test_db, company)
 
         valid = _row([company])
-        missing_fields = _row([company], first_name="   ", phone_number="")
+        missing_fields = _row([company], first_name="   ")
         missing_company = _row([f"Inexistente {_uid()}"])
         cleanup["emails"] += [valid["email"], missing_fields["email"]]
 
@@ -151,6 +151,34 @@ class TestWorkerBulkImport:
         assert worker["deleted_at"] is None
         assert worker["hashed_password"].startswith("$argon2")
         assert await test_db.Workers.find_one({"email": missing_fields["email"]}) is None
+
+    @pytest.mark.asyncio
+    async def test_phone_number_optional(
+        self, async_client: AsyncClient, admin_headers, test_db, cleanup
+    ):
+        company = f"PhoneCo {_uid()}"
+        cleanup["company_names"].append(company)
+        await _insert_company(test_db, company)
+
+        empty_phone = _row([company], phone_number="")
+        missing_phone = _row([company])
+        del missing_phone["phone_number"]
+        cleanup["emails"] += [empty_phone["email"], missing_phone["email"]]
+
+        response = await async_client.post(
+            BULK_URL,
+            json={"rows": [empty_phone, missing_phone], "dry_run": False},
+            headers=admin_headers,
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["created"] == 2
+        assert body["results"][0]["status"] == "created"
+        assert body["results"][1]["status"] == "created"
+
+        worker = await test_db.Workers.find_one({"email": missing_phone["email"]})
+        assert worker["phone_number"] == ""
 
     @pytest.mark.asyncio
     async def test_duplicate_in_db_skipped(
@@ -200,6 +228,41 @@ class TestWorkerBulkImport:
         assert stored["first_name"] == existing["first_name"]
         assert "updated_at" not in stored
         assert await test_db.Workers.find_one({"email": row_dup_idn["email"]}) is None
+
+    @pytest.mark.asyncio
+    async def test_duplicate_email_case_insensitive(
+        self, async_client: AsyncClient, admin_headers, test_db, cleanup
+    ):
+        company = f"CaseCo {_uid()}"
+        cleanup["company_names"].append(company)
+        await _insert_company(test_db, company)
+
+        existing_email = f"case.{_uid()}@example.com"
+        existing = {
+            "first_name": "Ya",
+            "last_name": "Estaba",
+            "email": existing_email,
+            "id_number": f"C{_uid()}",
+            "phone_number": "+34600000000",
+            "hashed_password": "$argon2$placeholder",
+            "company_ids": [],
+            "created_at": datetime.now(timezone.utc),
+            "deleted_at": None,
+        }
+        await test_db.Workers.insert_one(existing)
+        cleanup["emails"].append(existing_email)
+
+        row = _row([company], email=existing_email.upper())
+
+        response = await async_client.post(
+            BULK_URL, json={"rows": [row], "dry_run": False}, headers=admin_headers
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["skipped"] == 1
+        assert body["results"][0]["status"] == "skipped_duplicate"
+        assert body["results"][0]["detail"] == "Email ya registrado"
 
     @pytest.mark.asyncio
     async def test_intra_lot_duplicate(
@@ -254,6 +317,34 @@ class TestWorkerBulkImport:
         assert body["results"][0]["status"] == "error"
         assert f"Empresa no encontrada: {ghost}" == body["results"][0]["detail"]
         assert await test_db.Companies.find_one({"name": ghost}) is None
+
+    @pytest.mark.asyncio
+    async def test_empty_company_names_is_row_error(
+        self, async_client: AsyncClient, admin_headers, test_db, cleanup
+    ):
+        company = f"ReqCo {_uid()}"
+        cleanup["company_names"].append(company)
+        await _insert_company(test_db, company)
+
+        valid = _row([company])
+        no_company = _row([])
+        cleanup["emails"] += [valid["email"], no_company["email"]]
+
+        response = await async_client.post(
+            BULK_URL,
+            json={"rows": [valid, no_company], "dry_run": False},
+            headers=admin_headers,
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["created"] == 1
+        assert body["errors"] == 1
+        assert body["results"][1]["status"] == "error"
+        assert body["results"][1]["detail"] == "Debe indicar al menos una empresa"
+
+        assert await test_db.Workers.find_one({"email": valid["email"]}) is not None
+        assert await test_db.Workers.find_one({"email": no_company["email"]}) is None
 
     @pytest.mark.asyncio
     async def test_ambiguous_company_name(

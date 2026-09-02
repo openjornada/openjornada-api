@@ -121,9 +121,9 @@ class WorkerImportRow(BaseModel):
     first_name: str
     last_name: str
     email: str
-    phone_number: str
+    phone_number: Optional[str] = None
     id_number: str
-    company_names: List[str] = Field(..., min_length=1, description="Nombres de empresas (mínimo 1)")
+    company_names: List[str] = Field(default_factory=list, description="Nombres de empresas")
     default_timezone: str = "UTC"
 
 

@@ -99,13 +99,15 @@ def _resolve_company_ids(row: WorkerImportRow, company_cache: dict):
     for raw_name in row.company_names:
         name = raw_name.strip()
         if not name:
-            return [], "Nombre de empresa vacío en la fila"
+            continue
         matches = company_cache.get(name.lower(), [])
         if not matches:
             return [], f"Empresa no encontrada: {name}"
         if len(matches) > 1:
             return [], f"Empresa ambigua: {name}"
         company_ids.extend(matches)
+    if not company_ids:
+        return [], "Debe indicar al menos una empresa"
     return company_ids, None
 
 
@@ -215,7 +217,7 @@ async def bulk_import_workers(
     seen_id_numbers = set()
 
     for index, row in enumerate(rows):
-        email = (row.email or "").strip()
+        email = (row.email or "").strip().lower()
         echo_email: Optional[str] = email if _EMAIL_RE.match(email) else None
 
         def _row_result(status_value: str, detail: Optional[str] = None) -> WorkerImportRowResult:
@@ -227,7 +229,6 @@ async def bulk_import_workers(
             field for field, value in (
                 ("first_name", row.first_name),
                 ("last_name", row.last_name),
-                ("phone_number", row.phone_number),
                 ("id_number", row.id_number),
             )
             if not value or not value.strip()
@@ -248,11 +249,11 @@ async def bulk_import_workers(
             continue
 
         duplicate = await db.Workers.find_one({"$or": [
-            {"email": email},
+            {"email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}},
             {"id_number": id_number}
         ]})
         if duplicate:
-            detail = "Email ya registrado" if duplicate.get("email") == email else "DNI ya registrado"
+            detail = "Email ya registrado" if (duplicate.get("email") or "").lower() == email else "DNI ya registrado"
             results.append(_row_result("skipped_duplicate", detail))
             continue
         if email in seen_emails:
@@ -267,7 +268,7 @@ async def bulk_import_workers(
                 "first_name": row.first_name.strip(),
                 "last_name": row.last_name.strip(),
                 "email": email,
-                "phone_number": row.phone_number.strip(),
+                "phone_number": (row.phone_number or "").strip(),
                 "id_number": id_number,
                 "default_timezone": row.default_timezone,
                 "company_ids": company_ids,
@@ -278,9 +279,9 @@ async def bulk_import_workers(
                 "deleted_by": None,
             }
             inserted = await db.Workers.insert_one(worker_data)
-            if request.send_welcome_email and company_ids:
-                created_worker = await db.Workers.find_one({"_id": inserted.inserted_id})
-                await _send_welcome_email_to_worker(created_worker)
+            if request.send_welcome_email:
+                worker_data["_id"] = inserted.inserted_id
+                await _send_welcome_email_to_worker(worker_data)
 
         seen_emails.add(email)
         seen_id_numbers.add(id_number)
