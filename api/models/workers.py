@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr, Field
-from typing import Optional, List
+from typing import Optional, List, Literal
 from datetime import datetime
 
 from .sms import SmsWorkerConfig
@@ -104,3 +104,54 @@ class WorkerMeResponse(BaseModel):
     default_timezone: str
     company_ids: List[str]
     company_names: List[str]
+
+
+# Máximo de filas por lote en la importación masiva (evita requests enormes
+# que bloqueen el worker; dividir CSVs mayores en lotes de <= este tamaño).
+MAX_BULK_IMPORT_ROWS = 500
+
+
+class WorkerImportRow(BaseModel):
+    """One row of the bulk worker import (CSV parsed client-side).
+
+    `email` is a plain str on purpose: a malformed email must be reported as
+    a per-row error instead of rejecting the whole request with a 422.
+    """
+
+    first_name: str
+    last_name: str
+    email: str
+    phone_number: str
+    id_number: str
+    company_names: List[str] = Field(..., min_length=1, description="Nombres de empresas (mínimo 1)")
+    default_timezone: str = "UTC"
+
+
+class WorkerBulkImportRequest(BaseModel):
+    """Request body for POST /workers/bulk-import.
+
+    `rows` is limited to MAX_BULK_IMPORT_ROWS (500) entries per request.
+    """
+
+    rows: List[WorkerImportRow] = Field(..., max_length=MAX_BULK_IMPORT_ROWS)
+    dry_run: bool = Field(True, description="Si es true, solo valida sin crear nada")
+    send_welcome_email: bool = Field(False, description="Enviar email de bienvenida a los creados")
+
+
+class WorkerImportRowResult(BaseModel):
+    """Per-row outcome of a bulk import (row_index is 0-based within `rows`)."""
+
+    row_index: int
+    status: Literal["created", "skipped_duplicate", "error"]
+    detail: Optional[str] = None
+    email: Optional[str] = None
+
+
+class WorkerBulkImportResponse(BaseModel):
+    """Summary + per-row results of a bulk import."""
+
+    total: int
+    created: int
+    skipped: int
+    errors: int
+    results: List[WorkerImportRowResult]
