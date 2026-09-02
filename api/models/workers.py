@@ -108,7 +108,7 @@ class WorkerMeResponse(BaseModel):
 
 # Máximo de filas por lote en la importación masiva (evita requests enormes
 # que bloqueen el worker; dividir CSVs mayores en lotes de <= este tamaño).
-MAX_BULK_IMPORT_ROWS = 500
+MAX_BULK_IMPORT_ROWS = 200
 
 
 class WorkerImportRow(BaseModel):
@@ -130,7 +130,7 @@ class WorkerImportRow(BaseModel):
 class WorkerBulkImportRequest(BaseModel):
     """Request body for POST /workers/bulk-import.
 
-    `rows` is limited to MAX_BULK_IMPORT_ROWS (500) entries per request.
+    `rows` is limited to MAX_BULK_IMPORT_ROWS (200) entries per request.
     """
 
     rows: List[WorkerImportRow] = Field(..., max_length=MAX_BULK_IMPORT_ROWS)

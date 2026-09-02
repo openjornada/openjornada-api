@@ -1,10 +1,13 @@
 from fastapi import APIRouter, HTTPException, status, Depends
+from pydantic import TypeAdapter, EmailStr, ValidationError
 from typing import List, Optional
 from datetime import datetime, timedelta
 from bson.objectid import ObjectId
+from zoneinfo import ZoneInfo
 import re
 import secrets
 import logging
+import anyio
 
 from ..models.workers import (
     WorkerModel,
@@ -32,7 +35,7 @@ from ..utils.worker_auth import _authenticate_worker
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_email_adapter = TypeAdapter(EmailStr)
 
 
 async def _send_welcome_email_to_worker(created_worker: dict):
@@ -200,7 +203,7 @@ async def bulk_import_workers(
     aborta el lote. Con `dry_run=true` se ejecutan todas las validaciones
     (obligatorios, formato de email, resolución de empresas por nombre,
     duplicados en BD e intra-lote) sin insertar nada ni enviar emails.
-    Máximo MAX_BULK_IMPORT_ROWS (500) filas por request.
+    Máximo MAX_BULK_IMPORT_ROWS (200) filas por request.
     """
     rows = request.rows
 
@@ -217,8 +220,13 @@ async def bulk_import_workers(
     seen_id_numbers = set()
 
     for index, row in enumerate(rows):
-        email = (row.email or "").strip().lower()
-        echo_email: Optional[str] = email if _EMAIL_RE.match(email) else None
+        email_raw = (row.email or "").strip()
+        try:
+            _email_adapter.validate_python(email_raw)
+            email = email_raw.lower()
+            echo_email: Optional[str] = email
+        except ValidationError:
+            echo_email = None
 
         def _row_result(status_value: str, detail: Optional[str] = None) -> WorkerImportRowResult:
             return WorkerImportRowResult(
@@ -238,7 +246,14 @@ async def bulk_import_workers(
             continue
 
         if not echo_email:
-            results.append(_row_result("error", f"Email inválido: {email or '(vacío)'}"))
+            results.append(_row_result("error", f"Email inválido: {email_raw or '(vacío)'}"))
+            continue
+
+        tz = (row.default_timezone or "UTC").strip() or "UTC"
+        try:
+            ZoneInfo(tz)
+        except Exception:
+            results.append(_row_result("error", f"Zona horaria inválida: {tz}"))
             continue
 
         id_number = row.id_number.strip()
@@ -264,15 +279,16 @@ async def bulk_import_workers(
             continue
 
         if not request.dry_run:
+            hashed = await anyio.to_thread.run_sync(get_password_hash, secrets.token_urlsafe(16))
             worker_data = {
                 "first_name": row.first_name.strip(),
                 "last_name": row.last_name.strip(),
                 "email": email,
                 "phone_number": (row.phone_number or "").strip(),
                 "id_number": id_number,
-                "default_timezone": row.default_timezone,
+                "default_timezone": tz,
                 "company_ids": company_ids,
-                "hashed_password": get_password_hash(secrets.token_urlsafe(16)),
+                "hashed_password": hashed,
                 "created_by": current_user.username,
                 "created_at": datetime.utcnow(),
                 "deleted_at": None,

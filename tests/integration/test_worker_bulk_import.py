@@ -153,6 +153,57 @@ class TestWorkerBulkImport:
         assert await test_db.Workers.find_one({"email": missing_fields["email"]}) is None
 
     @pytest.mark.asyncio
+    async def test_invalid_email_domain_is_row_error(
+        self, async_client: AsyncClient, admin_headers, test_db, cleanup
+    ):
+        company = f"BadDomainCo {_uid()}"
+        cleanup["company_names"].append(company)
+        await _insert_company(test_db, company)
+
+        row = _row([company], email="ana@x..y.com")
+
+        response = await async_client.post(
+            BULK_URL, json={"rows": [row], "dry_run": False}, headers=admin_headers
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["created"] == 0
+        assert body["errors"] == 1
+        assert body["results"][0]["status"] == "error"
+        assert "Email inválido" in body["results"][0]["detail"]
+        assert body["results"][0]["email"] is None
+        assert await test_db.Workers.find_one({"email": row["email"]}) is None
+
+    @pytest.mark.asyncio
+    async def test_invalid_timezone_is_row_error(
+        self, async_client: AsyncClient, admin_headers, test_db, cleanup
+    ):
+        company = f"BadTzCo {_uid()}"
+        cleanup["company_names"].append(company)
+        await _insert_company(test_db, company)
+
+        invalid_tz = _row([company], default_timezone="Mars/Phobos")
+        valid = _row([company])
+        cleanup["emails"] += [invalid_tz["email"], valid["email"]]
+
+        response = await async_client.post(
+            BULK_URL,
+            json={"rows": [invalid_tz, valid], "dry_run": False},
+            headers=admin_headers,
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["created"] == 1
+        assert body["errors"] == 1
+        assert body["results"][0]["status"] == "error"
+        assert body["results"][0]["detail"] == "Zona horaria inválida: Mars/Phobos"
+        assert body["results"][1]["status"] == "created"
+        assert await test_db.Workers.find_one({"email": invalid_tz["email"]}) is None
+        assert await test_db.Workers.find_one({"email": valid["email"]}) is not None
+
+    @pytest.mark.asyncio
     async def test_phone_number_optional(
         self, async_client: AsyncClient, admin_headers, test_db, cleanup
     ):
