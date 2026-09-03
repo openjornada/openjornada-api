@@ -124,7 +124,7 @@ class TestRealtimeNotifications:
             event = await asyncio.wait_for(sub.queue.get(), timeout=2)
             assert event.type == "fichaje.created"
             assert event.payload["worker_id"] == worker_id
-            assert event.payload["company_name"] == f"RT Company pub"
+            assert event.payload["company_name"] == "RT Company pub"
             assert event.payload["company_id"] == company_id
             assert event.notification_id, "falta notification_id en el evento SSE"
             assert event.created_at, "falta created_at en el evento SSE"

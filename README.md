@@ -23,6 +23,7 @@ Backend API para el sistema OpenJornada, construido con FastAPI y MongoDB.
 - **Verificación de Integridad**: Hash SHA-256 para registros y exportaciones
 - **Firma Mensual de Trabajadores**: Firma digital de registros mensuales por el trabajador
 - **Recordatorios SMS**: Envío automático de SMS a trabajadores que olvidan fichar la salida (proveedor LabsMobile)
+- **Gestión de Ausencias y Vacaciones**: Módulo opcional por empresa (`absence_management_enabled`) con política configurable (días/año, cómputo laborable o natural, tipos de ausencia, antelación, medio día/horas, periodos bloqueados, máximo de solapamiento), solicitud y aprobación de un nivel con auditoría y transición atómica, saldo calculado al vuelo, justificantes en GridFS, validación (solapamientos, blackout, saldo) e integración con el informe mensual (los días aprobados no cuentan como jornada faltante). Endpoints `/api/absences` y `/api/absence-policies`
 
 ## 📋 Requisitos
 
@@ -365,6 +366,27 @@ Registros de copias de seguridad:
 - `GET /api/sms/history` - Historial de SMS enviados
 - `DELETE /api/sms/history` - Limpiar historial
 - `POST /api/workers/{id}/sms/send` - Enviar SMS manual a trabajador
+
+### Políticas de Ausencias (Admin only)
+- `GET /api/absence-policies/{company_id}` - Obtener la política de ausencias de la empresa
+- `PUT /api/absence-policies/{company_id}` - Crear/actualizar la política y su catálogo de tipos
+- `GET /api/absence-policies/{company_id}/types` - Catálogo de tipos de la empresa
+
+### Ausencias y Vacaciones (Admin)
+- `GET /api/absences/` - Listar solicitudes (filtros: `company_id` obligatorio, `status`, `worker_id`, `start_date`, `end_date`)
+- `GET /api/absences/{id}` - Detalle (incluye `validation_errors` si está pendiente)
+- `PATCH /api/absences/{id}` - Aprobar/rechazar
+- `GET /api/absences/calendar` - Calendario de equipo (vista admin)
+- `GET /api/absences/attachments/{attachment_id}` - Descargar justificante
+
+### Ausencias y Vacaciones (Trabajador - Auth por request)
+- `POST /api/absences/` - Crear solicitud
+- `POST /api/absences/me` - Listar solicitudes propias
+- `POST /api/absences/me/balance` - Saldo de vacaciones
+- `POST /api/absences/me/{id}/cancel` - Cancelar (solo si pendiente)
+- `POST /api/absences/me/calendar` - Calendario de equipo (sin tipo/motivo)
+- `POST /api/absences/me/types` - Catálogo de tipos de la empresa
+- `POST /api/absences/attachments` - Subir justificante (multipart) → `attachment_id`
 
 ## 💾 Sistema de Backups
 

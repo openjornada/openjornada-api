@@ -556,6 +556,152 @@ class EmailService:
             logger.error(f"[EMAIL] Traceback: {traceback.format_exc()}")
             return False
 
+    async def send_absence_approved_email(
+        self,
+        to_email: str,
+        worker_name: str,
+        company_name: str,
+        absence_type_name: str,
+        start_date,
+        end_date,
+        days_computed: float,
+        worker_comment: str,
+        admin_public_comment: str,
+        contact_email: str,
+        locale: str = 'es'
+    ) -> bool:
+        """
+        Send absence request approval email to worker.
+
+        Args:
+            to_email: Worker's email address
+            worker_name: Worker's full name
+            company_name: Company name
+            absence_type_name: Display name of the absence type (e.g. "Vacaciones")
+            start_date: First day of the absence
+            end_date: Last day of the absence
+            days_computed: Days consumed by this absence
+            worker_comment: Worker's comment on the request (can be empty)
+            admin_public_comment: Admin's public comment (can be empty)
+            contact_email: Contact email for support
+            locale: Language code for email template (default: 'es')
+
+        Returns:
+            True if sent successfully, False otherwise
+        """
+        logger.info(f"[EMAIL] send_absence_approved_email called for: {to_email}")
+
+        try:
+            html_body, text_body = email_renderer.render(
+                template_name='absence_approved.html',
+                context={
+                    'app_name': self.app_name,
+                    'worker_name': worker_name,
+                    'company_name': company_name,
+                    'absence_type_name': absence_type_name,
+                    'start_date': start_date,
+                    'end_date': end_date,
+                    'days_computed': days_computed,
+                    'worker_comment': worker_comment,
+                    'admin_public_comment': admin_public_comment,
+                    'contact_email': contact_email
+                },
+                locale=locale
+            )
+
+            subject = f"Tu solicitud de ausencia ha sido aprobada - {self.app_name}"
+
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                self._executor,
+                self._send_email_sync,
+                to_email,
+                subject,
+                text_body,
+                html_body
+            )
+            logger.info(f"[EMAIL] Absence approval email send result: {result}")
+            return result
+
+        except Exception as e:
+            logger.error(f"[EMAIL] Error preparing absence approval email: {e}")
+            import traceback
+            logger.error(f"[EMAIL] Traceback: {traceback.format_exc()}")
+            return False
+
+    async def send_absence_rejected_email(
+        self,
+        to_email: str,
+        worker_name: str,
+        company_name: str,
+        absence_type_name: str,
+        start_date,
+        end_date,
+        days_computed: float,
+        worker_comment: str,
+        admin_public_comment: str,
+        contact_email: str,
+        locale: str = 'es'
+    ) -> bool:
+        """
+        Send absence request rejection email to worker.
+
+        Args:
+            to_email: Worker's email address
+            worker_name: Worker's full name
+            company_name: Company name
+            absence_type_name: Display name of the absence type
+            start_date: First day of the requested absence
+            end_date: Last day of the requested absence
+            days_computed: Days that would have been consumed
+            worker_comment: Worker's comment on the request (can be empty)
+            admin_public_comment: Admin's public comment / rejection reason (can be empty)
+            contact_email: Contact email for support
+            locale: Language code for email template (default: 'es')
+
+        Returns:
+            True if sent successfully, False otherwise
+        """
+        logger.info(f"[EMAIL] send_absence_rejected_email called for: {to_email}")
+
+        try:
+            html_body, text_body = email_renderer.render(
+                template_name='absence_rejected.html',
+                context={
+                    'app_name': self.app_name,
+                    'worker_name': worker_name,
+                    'company_name': company_name,
+                    'absence_type_name': absence_type_name,
+                    'start_date': start_date,
+                    'end_date': end_date,
+                    'days_computed': days_computed,
+                    'worker_comment': worker_comment,
+                    'admin_public_comment': admin_public_comment,
+                    'contact_email': contact_email
+                },
+                locale=locale
+            )
+
+            subject = f"Tu solicitud de ausencia ha sido rechazada - {self.app_name}"
+
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                self._executor,
+                self._send_email_sync,
+                to_email,
+                subject,
+                text_body,
+                html_body
+            )
+            logger.info(f"[EMAIL] Absence rejection email send result: {result}")
+            return result
+
+        except Exception as e:
+            logger.error(f"[EMAIL] Error preparing absence rejection email: {e}")
+            import traceback
+            logger.error(f"[EMAIL] Traceback: {traceback.format_exc()}")
+            return False
+
 
 # Singleton instance
 email_service = EmailService()

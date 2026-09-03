@@ -1,9 +1,13 @@
 from fastapi import APIRouter, HTTPException, status, Depends
-from typing import List
+from pydantic import TypeAdapter, EmailStr, ValidationError
+from typing import List, Optional
 from datetime import datetime, timedelta
 from bson.objectid import ObjectId
+from zoneinfo import ZoneInfo
+import re
 import secrets
 import logging
+import anyio
 
 from ..models.workers import (
     WorkerModel,
@@ -15,6 +19,10 @@ from ..models.workers import (
     WorkerCompaniesRequest,
     WorkerMeRequest,
     WorkerMeResponse,
+    WorkerBulkImportRequest,
+    WorkerBulkImportResponse,
+    WorkerImportRow,
+    WorkerImportRowResult,
 )
 from ..models.auth import APIUser
 from ..database import db, convert_id
@@ -26,6 +34,85 @@ from ..utils.worker_auth import _authenticate_worker
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+_email_adapter = TypeAdapter(EmailStr)
+
+
+async def _send_welcome_email_to_worker(created_worker: dict):
+    """Generate a password-reset token and send the welcome email (best-effort).
+
+    Shared by create_worker and the bulk import. An email failure never
+    propagates: the worker creation is not reverted.
+    """
+    reset_token = secrets.token_urlsafe(32)
+    reset_token_expires = datetime.utcnow() + timedelta(hours=1)
+
+    await db.Workers.update_one(
+        {"_id": created_worker["_id"]},
+        {"$set": {
+            "reset_token": reset_token,
+            "reset_token_expires": reset_token_expires
+        }}
+    )
+
+    settings = await db.Settings.find_one()
+    contact_email = settings.get("contact_email", "support@openjornada.es") if settings else "support@openjornada.es"
+    import os
+    webapp_url = os.getenv("WEBAPP_URL", "http://localhost:5173")
+
+    worker_name = f"{created_worker.get('first_name', '')} {created_worker.get('last_name', '')}".strip() or "Usuario"
+
+    try:
+        await email_service.send_welcome_email(
+            to_email=created_worker["email"],
+            worker_name=worker_name,
+            reset_token=reset_token,
+            webapp_url=webapp_url,
+            contact_email=contact_email
+        )
+    except Exception as e:
+        logger.error(f"[CREATE-WORKER] Error sending welcome email: {type(e).__name__}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+
+
+async def _build_company_name_cache(names: set) -> dict:
+    """One exact case-insensitive query per distinct company name.
+
+    Returns {lowercase_name: [company_id_str, ...]} over active companies.
+    """
+    cache = {}
+    for name in names:
+        ids = []
+        async for company in db.Companies.find(
+            {"name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}, "deleted_at": None},
+            {"_id": 1},
+        ):
+            ids.append(str(company["_id"]))
+        cache[name.lower()] = ids
+    return cache
+
+
+def _resolve_company_ids(row: WorkerImportRow, company_cache: dict):
+    """Resolve row.company_names to company ids via the request cache.
+
+    Returns (company_ids, error_detail). Never creates companies.
+    """
+    company_ids = []
+    for raw_name in row.company_names:
+        name = raw_name.strip()
+        if not name:
+            continue
+        matches = company_cache.get(name.lower(), [])
+        if not matches:
+            return [], f"Empresa no encontrada: {name}"
+        if len(matches) > 1:
+            return [], f"Empresa ambigua: {name}"
+        company_ids.extend(matches)
+    if not company_ids:
+        return [], "Debe indicar al menos una empresa"
+    return company_ids, None
+
 
 @router.post("/workers/", response_model=WorkerResponse, status_code=status.HTTP_201_CREATED)
 async def create_worker(
@@ -86,37 +173,7 @@ async def create_worker(
 
 
     if send_welcome_email:
-
-        reset_token = secrets.token_urlsafe(32)
-        reset_token_expires = datetime.utcnow() + timedelta(hours=1)
-        
-        await db.Workers.update_one(
-            {"_id": created_worker["_id"]},
-            {"$set": {
-                "reset_token": reset_token,
-                "reset_token_expires": reset_token_expires
-            }}
-        )
-        
-        settings = await db.Settings.find_one()
-        contact_email = settings.get("contact_email", "support@openjornada.es") if settings else "support@openjornada.es"
-        import os
-        webapp_url = os.getenv("WEBAPP_URL", "http://localhost:5173")
-       
-        worker_name = f"{created_worker.get('first_name', '')} {created_worker.get('last_name', '')}".strip() or "Usuario"
-        
-        try:
-            await email_service.send_welcome_email(
-                to_email=created_worker["email"],
-                worker_name=worker_name,
-                reset_token=reset_token,
-                webapp_url=webapp_url,
-                contact_email=contact_email
-            )
-        except Exception as e:
-            logger.error(f"[CREATE-WORKER] Error sending welcome email: {type(e).__name__}: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
+        await _send_welcome_email_to_worker(created_worker)
 
     # Get company names for response
     company_names = []
@@ -132,6 +189,128 @@ async def create_worker(
     response_data["company_names"] = company_names
 
     return WorkerResponse(**response_data)
+
+
+@router.post("/workers/bulk-import", response_model=WorkerBulkImportResponse, status_code=status.HTTP_200_OK)
+async def bulk_import_workers(
+    request: WorkerBulkImportRequest,
+    current_user: APIUser = Depends(PermissionChecker("create_workers"))
+):
+    """
+    Importación masiva de trabajadores (JSON con filas ya parseadas del CSV).
+
+    Procesamiento secuencial con import parcial: una fila que falla no
+    aborta el lote. Con `dry_run=true` se ejecutan todas las validaciones
+    (obligatorios, formato de email, resolución de empresas por nombre,
+    duplicados en BD e intra-lote) sin insertar nada ni enviar emails.
+    Máximo MAX_BULK_IMPORT_ROWS (200) filas por request.
+    """
+    rows = request.rows
+
+    distinct_names = {
+        name.strip()
+        for row in rows
+        for name in row.company_names
+        if name.strip()
+    }
+    company_cache = await _build_company_name_cache(distinct_names)
+
+    results: List[WorkerImportRowResult] = []
+    seen_emails = set()
+    seen_id_numbers = set()
+
+    for index, row in enumerate(rows):
+        email_raw = (row.email or "").strip()
+        try:
+            _email_adapter.validate_python(email_raw)
+            email = email_raw.lower()
+            echo_email: Optional[str] = email
+        except ValidationError:
+            echo_email = None
+
+        def _row_result(status_value: str, detail: Optional[str] = None) -> WorkerImportRowResult:
+            return WorkerImportRowResult(
+                row_index=index, status=status_value, detail=detail, email=echo_email
+            )
+
+        missing = [
+            field for field, value in (
+                ("first_name", row.first_name),
+                ("last_name", row.last_name),
+                ("id_number", row.id_number),
+            )
+            if not value or not value.strip()
+        ]
+        if missing:
+            results.append(_row_result("error", f"Campo/s obligatorios vacíos: {', '.join(missing)}"))
+            continue
+
+        if not echo_email:
+            results.append(_row_result("error", f"Email inválido: {email_raw or '(vacío)'}"))
+            continue
+
+        tz = (row.default_timezone or "UTC").strip() or "UTC"
+        try:
+            ZoneInfo(tz)
+        except Exception:
+            results.append(_row_result("error", f"Zona horaria inválida: {tz}"))
+            continue
+
+        id_number = row.id_number.strip()
+
+        company_ids, company_error = _resolve_company_ids(row, company_cache)
+        if company_error:
+            results.append(_row_result("error", company_error))
+            continue
+
+        duplicate = await db.Workers.find_one({"$or": [
+            {"email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}},
+            {"id_number": id_number}
+        ]})
+        if duplicate:
+            detail = "Email ya registrado" if (duplicate.get("email") or "").lower() == email else "DNI ya registrado"
+            results.append(_row_result("skipped_duplicate", detail))
+            continue
+        if email in seen_emails:
+            results.append(_row_result("skipped_duplicate", "Email duplicado en el lote"))
+            continue
+        if id_number in seen_id_numbers:
+            results.append(_row_result("skipped_duplicate", "DNI duplicado en el lote"))
+            continue
+
+        if not request.dry_run:
+            hashed = await anyio.to_thread.run_sync(get_password_hash, secrets.token_urlsafe(16))
+            worker_data = {
+                "first_name": row.first_name.strip(),
+                "last_name": row.last_name.strip(),
+                "email": email,
+                "phone_number": (row.phone_number or "").strip(),
+                "id_number": id_number,
+                "default_timezone": tz,
+                "company_ids": company_ids,
+                "hashed_password": hashed,
+                "created_by": current_user.username,
+                "created_at": datetime.utcnow(),
+                "deleted_at": None,
+                "deleted_by": None,
+            }
+            inserted = await db.Workers.insert_one(worker_data)
+            if request.send_welcome_email:
+                worker_data["_id"] = inserted.inserted_id
+                await _send_welcome_email_to_worker(worker_data)
+
+        seen_emails.add(email)
+        seen_id_numbers.add(id_number)
+        results.append(_row_result("created"))
+
+    return WorkerBulkImportResponse(
+        total=len(rows),
+        created=sum(1 for r in results if r.status == "created"),
+        skipped=sum(1 for r in results if r.status == "skipped_duplicate"),
+        errors=sum(1 for r in results if r.status == "error"),
+        results=results,
+    )
+
 
 @router.put("/workers/{worker_id}", response_model=WorkerResponse)
 async def update_worker(
@@ -646,7 +825,8 @@ async def get_worker_companies(
                         "id": str(company["_id"]),
                         "name": company["name"],
                         "created_at": company.get("created_at"),
-                        "updated_at": company.get("updated_at")
+                        "updated_at": company.get("updated_at"),
+                        "absence_management_enabled": company.get("absence_management_enabled", False)
                     })
             except Exception as e:
                 logger.warning(f"[MY-COMPANIES] Error loading company {company_id_str}: {e}")

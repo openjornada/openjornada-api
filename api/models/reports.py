@@ -46,6 +46,20 @@ class DailyWorkSummary(BaseModel):
     is_modified: bool = False
     modifications: List[ModificationEntry] = []
 
+    # Absence & vacation management (Fase 1) — only populated when the
+    # worker's company has the module active (absence-reporting spec).
+    is_absence: bool = False
+    absence_type: Optional[str] = None
+
+
+class AbsenceSummaryEntry(BaseModel):
+    """Summary of a single approved absence overlapping the reported period."""
+
+    absence_type: str
+    start_date: date
+    end_date: date
+    days_computed: float
+
 
 class WorkerMonthlySummary(BaseModel):
     """Monthly work summary for a single worker."""
@@ -70,6 +84,9 @@ class WorkerMonthlySummary(BaseModel):
         return round(self.total_worked_minutes / 60, 2)
 
     daily_details: List[DailyWorkSummary] = Field(default_factory=list)
+
+    # Only populated when the company has the absence module active.
+    absences: List[AbsenceSummaryEntry] = Field(default_factory=list)
 
     signature_status: Literal["pending", "signed", "not_required"] = "pending"
     signed_at: Optional[AwareDatetime] = None

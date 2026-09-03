@@ -30,6 +30,7 @@ from reportlab.platypus import (
 )
 
 from ..models.reports import (
+    AbsenceSummaryEntry,
     CompanyMonthlySummary,
     DailyWorkSummary,
     ModificationEntry,
@@ -92,6 +93,7 @@ class ExportService:
             "Entrada", "Salida", "Horas Trabajadas",
             "Pausas (min)", "Horas Extra", "Modificado",
             "Registros Modificados", "Detalle Modificaciones",
+            "Ausencia", "Tipo Ausencia",
         ]
         text_buffer.write(";".join(header) + "\r\n")
 
@@ -225,6 +227,13 @@ class ExportService:
             story.append(self._build_pdf_modifications_table(all_modifications, tz))
             story.append(Spacer(1, 0.5 * cm))
 
+        absence_rows = self._collect_absence_rows(summary)
+        if absence_rows:
+            story.append(Paragraph("<b>Ausencias del periodo</b>", styles["Heading2"]))
+            story.append(Spacer(1, 0.2 * cm))
+            story.append(self._build_pdf_absences_table(absence_rows))
+            story.append(Spacer(1, 0.5 * cm))
+
         story.append(Paragraph(
             "Generado por OpenJornada. Registro conforme al art. 34.9 ET y RD-Ley 8/2019.",
             styles["Italic"],
@@ -254,6 +263,20 @@ class ExportService:
     def _extract_meta(summary: SummaryType) -> tuple[str, str, int, int]:
         """Return (company_id, company_name, year, month) from either summary type."""
         return summary.company_id, summary.company_name, summary.year, summary.month
+
+    @staticmethod
+    def _collect_absence_rows(summary: SummaryType) -> list[tuple[str, AbsenceSummaryEntry]]:
+        """Flatten the period's approved absences into (worker_name, entry) tuples."""
+        if isinstance(summary, WorkerMonthlySummary):
+            rows = [(summary.worker_name, a) for a in summary.absences]
+        else:
+            rows = [
+                (worker.worker_name, a)
+                for worker in summary.workers
+                for a in worker.absences
+            ]
+        rows.sort(key=lambda row: (row[1].start_date, row[0]))
+        return rows
 
     # ---------------------------------------------------------------------------
     # Internal helpers — CSV formatting
@@ -302,6 +325,8 @@ class ExportService:
             modified_str,
             str(mod_count),
             detail_str,
+            "Si" if day.is_absence else "No",
+            day.absence_type or "",
         ]
         return ";".join(fields)
 
@@ -350,6 +375,7 @@ class ExportService:
             "Fecha", "DNI", "Nombre", "Empresa",
             "Entrada", "Salida", "Horas trabajadas",
             "Pausas (min)", "Descansos (min)", "Modificado",
+            "Ausencia", "Tipo Ausencia",
         ]
         ws.append(headers)
         self._style_header_row(ws, 1, len(headers))
@@ -374,6 +400,8 @@ class ExportService:
                 round(day.total_pause_minutes, 0),
                 round(day.total_break_minutes, 0),
                 "Si" if day.is_modified else "No",
+                "Si" if day.is_absence else "No",
+                day.absence_type or "",
             ])
 
         self._auto_column_widths(ws)
@@ -464,7 +492,14 @@ class ExportService:
                 day.last_exit.astimezone(tz).strftime("%H:%M")
                 if day.last_exit else "-"
             )
-            status_str = "Abierto" if day.has_open_session else ("Mod." if day.is_modified else "OK")
+            if day.is_absence:
+                status_str = "Ausencia"
+            elif day.has_open_session:
+                status_str = "Abierto"
+            elif day.is_modified:
+                status_str = "Mod."
+            else:
+                status_str = "OK"
 
             if isinstance(summary, CompanyMonthlySummary):
                 data.append([
@@ -545,6 +580,28 @@ class ExportService:
             ])
 
         col_widths = [2.0 * cm, 1.5 * cm, 2.5 * cm, 2.5 * cm, 3.5 * cm, 4.0 * cm]
+        table = Table(data, colWidths=col_widths, repeatRows=1)
+        table.setStyle(self._pdf_table_style())
+        self._apply_alternating_rows(table, len(data))
+        return table
+
+    def _build_pdf_absences_table(
+        self, rows: list[tuple[str, AbsenceSummaryEntry]]
+    ) -> Table:
+        """Build the approved-absences table for the PDF report (clones _build_pdf_modifications_table)."""
+        header = ["Trabajador", "Tipo", "Inicio", "Fin", "Dias"]
+        data = [header]
+
+        for worker_name, entry in rows:
+            data.append([
+                worker_name,
+                entry.absence_type,
+                entry.start_date.strftime("%d/%m/%Y"),
+                entry.end_date.strftime("%d/%m/%Y"),
+                f"{entry.days_computed:.1f}",
+            ])
+
+        col_widths = [5.0 * cm, 4.0 * cm, 3.0 * cm, 3.0 * cm, 2.0 * cm]
         table = Table(data, colWidths=col_widths, repeatRows=1)
         table.setStyle(self._pdf_table_style())
         self._apply_alternating_rows(table, len(data))
