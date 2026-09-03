@@ -270,6 +270,7 @@ async def create_time_record(
             "timestamp": current_time_utc.isoformat(),
             "company_id": credentials.company_id,
             "company_name": company_name,
+            "duration_minutes": response.duration_minutes,
         },
     )
     return response
