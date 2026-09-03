@@ -7,6 +7,10 @@ load_dotenv()
 MONGO_URL = os.getenv("MONGODB_URL") or os.getenv("MONGO_URL", "mongodb://mongodb:27017")
 DB_NAME = os.getenv("DATABASE_NAME") or os.getenv("DB_NAME", "time_tracking_db")
 
+# Retención del outbox de notificaciones (segundos). Las notificaciones son
+# avisos efímeros: se purgan automáticamente vía índice TTL. 90 días por defecto.
+NOTIFICATIONS_RETENTION_SECONDS = 90 * 24 * 60 * 60
+
 client = motor.motor_asyncio.AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
 
@@ -79,6 +83,27 @@ async def init_db():
 
         # Create index for AbsencePolicies (exactly one policy per company)
         await db.AbsencePolicies.create_index("company_id", unique=True)
+        # Indexes for Notifications (real-time outbox).
+        # NOTA: los antiguos índices con prefijo company_id (company_id_created_at,
+        # company_id_read) están obsoletos; pueden borrarse a mano en despliegues
+        # existentes (dropIndex). No se hace drop automático: fallaría en BD nuevas.
+        # Notificaciones (tiempo real). Las consultas nunca filtran por company_id
+        # (aislamiento por tenant = BD separada), así que los índices NO deben
+        # prefixear company_id. Ver design.md "Riesgos".
+        #  - sort/últimas N:  find({}).sort(created_at, -1)  -> índice creado_at
+        #    (un índice único sobre created_at sirve también para el sort descendente
+        #     porque Mongo lo recorre en reversa). Añadimos TTL para acotar el outbox.
+        #  - no-leídas:       find({"read": False}).sort(created_at, -1) y
+        #                     count_documents({"read": False}) -> índice compuesto.
+        await db.notifications.create_index(
+            [("created_at", 1)],
+            name="notifications_created_ttl",
+            expireAfterSeconds=NOTIFICATIONS_RETENTION_SECONDS,
+        )
+        await db.notifications.create_index(
+            [("read", 1), ("created_at", -1)],
+            name="notifications_unread_created",
+        )
 
         # Index for WorkerShiftStates (CAS guard — must be unique per worker+company)
         await db.WorkerShiftStates.create_index(
