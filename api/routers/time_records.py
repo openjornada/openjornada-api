@@ -21,6 +21,7 @@ from ..auth.permissions import PermissionChecker
 from ..auth.subscription_guard import require_active_subscription
 from ..services.time_calculation_service import TimeCalculationService
 from ..services.integrity_service import IntegrityService
+from ..services.notification_service import emit_notification
 from .shift_state import transition_shift_state, revert_shift_state
 
 router = APIRouter()
@@ -254,7 +255,24 @@ async def create_time_record(
     record_data_response = {**convert_id(created_record)}
     record_data_response["record_type"] = action
     record_data_response["timestamp"] = ensure_utc_aware(created_record.get("timestamp"))
-    return TimeRecordResponse(**record_data_response)
+    response = TimeRecordResponse(**record_data_response)
+
+    # PASO H — notificación en tiempo real (outbox + bus). Best-effort:
+    # emit_notification nunca lanza, así que un fallo aquí NO aborta el fichaje.
+    await emit_notification(
+        event_type="fichaje.created",
+        company_id=credentials.company_id,
+        payload={
+            "time_record_id": response.id,
+            "worker_id": worker_id,
+            "worker_name": worker_name,
+            "record_type": action,
+            "timestamp": current_time_utc.isoformat(),
+            "company_id": credentials.company_id,
+            "company_name": company_name,
+        },
+    )
+    return response
 
 @router.get("/time-records/{worker_id}/latest", response_model=TimeRecordResponse)
 async def get_latest_time_record(
