@@ -28,7 +28,7 @@ from datetime import date, datetime, timezone as dt_timezone
 from typing import List, Optional
 
 from bson.objectid import ObjectId
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status
 from fastapi.responses import Response
 from pymongo import ReturnDocument
 
@@ -57,6 +57,8 @@ from ..services.absence_gating import ensure_absence_module_enabled, require_abs
 from ..services.absence_validator import AbsenceValidator
 from ..services.attachment_service import attachment_service
 from ..services.email_service import EmailService
+from ..utils.company_locale import resolve_company_locale
+from ..utils.errors import raise_api_error
 from ..utils.worker_auth import _authenticate_worker, _verify_worker_company_access
 from .absence_policies import _get_or_seed_policy
 
@@ -87,9 +89,10 @@ def ensure_utc_aware(dt: Optional[datetime]) -> Optional[datetime]:
 async def _get_policy_or_404(company_id: str) -> dict:
     policy = await db.AbsencePolicies.find_one({"company_id": company_id})
     if policy is None:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="La empresa no tiene una política de ausencias configurada",
+            error_code="absence.policy_not_found",
+            message="La empresa no tiene una política de ausencias configurada",
         )
     return policy
 
@@ -118,10 +121,10 @@ async def _get_worker_or_404(worker_id: str) -> dict:
     try:
         oid = ObjectId(worker_id)
     except Exception:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Worker not found")
+        raise_api_error(status_code=status.HTTP_404_NOT_FOUND, error_code="worker.not_found", message="Worker not found")
     worker = await db.Workers.find_one({"_id": oid, "deleted_at": None})
     if worker is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Worker not found")
+        raise_api_error(status_code=status.HTTP_404_NOT_FOUND, error_code="worker.not_found", message="Worker not found")
     return worker
 
 
@@ -147,31 +150,35 @@ async def create_absence_request(
     company = await ensure_absence_module_enabled(request_data.company_id)
 
     if request_data.end_date < request_data.start_date:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="La fecha de fin no puede ser anterior a la fecha de inicio",
+            error_code="absence.invalid_date_range",
+            message="La fecha de fin no puede ser anterior a la fecha de inicio",
         )
 
     policy = await _get_or_seed_policy(request_data.company_id)
 
     absence_type = _find_absence_type(policy, request_data.absence_type_code)
     if absence_type is None:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Tipo de ausencia desconocido: {request_data.absence_type_code}",
+            error_code="absence.unknown_type",
+            message=f"Tipo de ausencia desconocido: {request_data.absence_type_code}",
         )
 
     if request_data.is_partial and not policy.get("allow_half_day", True):
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="La política de esta empresa no permite solicitudes de medio día",
+            error_code="absence.half_day_not_allowed",
+            message="La política de esta empresa no permite solicitudes de medio día",
         )
 
     is_hourly = request_data.start_time is not None and request_data.end_time is not None
     if is_hourly and not policy.get("allow_hourly", False):
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="La política de esta empresa no permite solicitudes por horas",
+            error_code="absence.hourly_not_allowed",
+            message="La política de esta empresa no permite solicitudes por horas",
         )
 
     days_computed = compute_absence_days(
@@ -201,9 +208,10 @@ async def create_absence_request(
     )
     if not is_valid:
         blocking_messages = [issue.message for issue in issues if issue.blocking]
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="; ".join(blocking_messages),
+            error_code="absence.validation_failed",
+            message="; ".join(blocking_messages),
         )
 
     absence_doc = {
@@ -326,11 +334,11 @@ async def cancel_absence_request(
     try:
         absence_oid = ObjectId(absence_id)
     except Exception:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid absence ID format")
+        raise_api_error(status_code=status.HTTP_400_BAD_REQUEST, error_code="absence.invalid_id", message="Invalid absence ID format")
 
     existing = await db.Absences.find_one({"_id": absence_oid, "worker_id": worker_id})
     if existing is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Absence request not found")
+        raise_api_error(status_code=status.HTTP_404_NOT_FOUND, error_code="absence.not_found", message="Absence request not found")
 
     await ensure_absence_module_enabled(existing["company_id"])
 
@@ -344,9 +352,10 @@ async def cancel_absence_request(
         return_document=ReturnDocument.AFTER,
     )
     if updated is None:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Solo se pueden cancelar solicitudes pendientes",
+            error_code="absence.not_pending",
+            message="Solo se pueden cancelar solicitudes pendientes",
         )
 
     return WorkerAbsenceResponse(**prepare_absence_response(updated))
@@ -491,7 +500,7 @@ async def download_absence_attachment(
     """Download a justificante by id (admin only), gated by its absence's company."""
     metadata = await attachment_service.get_metadata(attachment_id)
     if metadata is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Justificante no encontrado")
+        raise_api_error(status_code=status.HTTP_404_NOT_FOUND, error_code="absence.attachment_not_found", message="Justificante no encontrado")
 
     await ensure_absence_module_enabled(metadata.get("company_id", ""))
 
@@ -512,11 +521,11 @@ async def get_absence(
     try:
         absence_oid = ObjectId(absence_id)
     except Exception:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid absence ID format")
+        raise_api_error(status_code=status.HTTP_400_BAD_REQUEST, error_code="absence.invalid_id", message="Invalid absence ID format")
 
     doc = await db.Absences.find_one({"_id": absence_oid})
     if doc is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Absence request not found")
+        raise_api_error(status_code=status.HTTP_404_NOT_FOUND, error_code="absence.not_found", message="Absence request not found")
 
     await ensure_absence_module_enabled(doc["company_id"])
 
@@ -564,11 +573,11 @@ async def update_absence(
     try:
         absence_oid = ObjectId(absence_id)
     except Exception:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid absence ID format")
+        raise_api_error(status_code=status.HTTP_400_BAD_REQUEST, error_code="absence.invalid_id", message="Invalid absence ID format")
 
     current_doc = await db.Absences.find_one({"_id": absence_oid})
     if current_doc is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Absence request not found")
+        raise_api_error(status_code=status.HTTP_404_NOT_FOUND, error_code="absence.not_found", message="Absence request not found")
 
     await ensure_absence_module_enabled(current_doc["company_id"])
 
@@ -576,9 +585,10 @@ async def update_absence(
         policy = await db.AbsencePolicies.find_one({"company_id": current_doc["company_id"]})
         worker = await db.Workers.find_one({"_id": ObjectId(current_doc["worker_id"])})
         if policy is None or worker is None:
-            raise HTTPException(
+            raise_api_error(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No se puede aprobar: falta la política o el trabajador ya no existe",
+                error_code="absence.approve_missing_data",
+                message="No se puede aprobar: falta la política o el trabajador ya no existe",
             )
         absence_type = _find_absence_type(policy, current_doc["absence_type_code"]) or {
             "requires_attachment": False,
@@ -600,9 +610,10 @@ async def update_absence(
         )
         if not is_valid:
             blocking_messages = [issue.message for issue in issues if issue.blocking]
-            raise HTTPException(
+            raise_api_error(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"No se puede aprobar: {'; '.join(blocking_messages)}",
+                error_code="absence.validation_failed",
+                message=f"No se puede aprobar: {'; '.join(blocking_messages)}",
             )
 
     # Atomic transition — only succeeds if status is currently PENDING.
@@ -621,9 +632,10 @@ async def update_absence(
         return_document=ReturnDocument.AFTER,
     )
     if updated_doc is None:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Absence request not found, already processed, or not pending",
+            error_code="absence.already_processed",
+            message="Absence request not found, already processed, or not pending",
         )
 
     email_service = EmailService()
@@ -632,6 +644,9 @@ async def update_absence(
     end_date_val = updated_doc["end_date"]
 
     try:
+        # Notifications to workers always use the recipient company's language,
+        # never the language of the admin who triggered the action.
+        notification_locale = await resolve_company_locale(updated_doc.get("company_id"))
         if request_data.status == AbsenceStatus.ACCEPTED:
             await email_service.send_absence_approved_email(
                 to_email=updated_doc["worker_email"],
@@ -644,7 +659,7 @@ async def update_absence(
                 worker_comment=updated_doc.get("worker_comment") or "",
                 admin_public_comment=request_data.admin_public_comment or "",
                 contact_email=contact_email,
-                locale="es",
+                locale=notification_locale,
             )
         elif request_data.status == AbsenceStatus.REJECTED:
             await email_service.send_absence_rejected_email(
@@ -658,7 +673,7 @@ async def update_absence(
                 worker_comment=updated_doc.get("worker_comment") or "",
                 admin_public_comment=request_data.admin_public_comment or "",
                 contact_email=contact_email,
-                locale="es",
+                locale=notification_locale,
             )
     except Exception as e:
         # Log error but don't fail the request — the state transition already succeeded.

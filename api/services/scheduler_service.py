@@ -13,6 +13,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from bson import ObjectId
 
 from ..database import db
+from ..models.i18n import resolve_notification_locale
 
 logger = logging.getLogger(__name__)
 
@@ -344,6 +345,8 @@ class SchedulerService:
                     hours_open=hours_elapsed,
                     reminder_number=next_reminder_number,
                     worker_id_number=worker_id_number,
+                    # Reminder text follows the recipient company's language
+                    notification_locale=resolve_notification_locale(company),
                 )
 
             except Exception as e:

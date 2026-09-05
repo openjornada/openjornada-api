@@ -8,6 +8,7 @@ from ..models.companies import CompanyCreate, CompanyUpdate, CompanyResponse
 from ..models.auth import APIUser
 from ..database import db, convert_id
 from ..auth.permissions import PermissionChecker
+from ..utils.errors import raise_api_error
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -28,9 +29,10 @@ async def create_company(
     if existing_company:
         # Check if it's a deleted company
         if existing_company.get("deleted_at") is None:
-            raise HTTPException(
+            raise_api_error(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Ya existe una empresa con el nombre '{company.name}'"
+                error_code="company.name_taken",
+                message=f"Ya existe una empresa con el nombre '{company.name}'",
             )
 
     # Create company document
@@ -96,9 +98,10 @@ async def get_company(
         company = None
 
     if not company:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Empresa no encontrada"
+            error_code="company.not_found",
+            message="Empresa no encontrada",
         )
 
     return CompanyResponse(**convert_id(company))
@@ -125,27 +128,30 @@ async def update_company(
         company = None
 
     if not company:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Empresa no encontrada"
+            error_code="company.not_found",
+            message="Empresa no encontrada",
         )
 
     # Prepare update data
     update_data = company_update.model_dump(exclude_unset=True)
 
     if not update_data:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No se proporcionaron datos para actualizar"
+            error_code="company.no_update_data",
+            message="No se proporcionaron datos para actualizar",
         )
 
     # If name is being updated, check uniqueness
     if "name" in update_data and update_data["name"] != company["name"]:
         existing = await db.Companies.find_one({"name": update_data["name"]})
         if existing:
-            raise HTTPException(
+            raise_api_error(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Ya existe una empresa con el nombre '{update_data['name']}'"
+                error_code="company.name_taken",
+                message=f"Ya existe una empresa con el nombre '{update_data['name']}'",
             )
 
     # Update timestamp
@@ -188,9 +194,10 @@ async def delete_company(
         company = None
 
     if not company:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Empresa no encontrada"
+            error_code="company.not_found",
+            message="Empresa no encontrada",
         )
 
     # CRITICAL: Check if company has associated workers
@@ -200,9 +207,10 @@ async def delete_company(
     })
 
     if workers_count > 0:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No se puede eliminar una empresa que tiene trabajadores asociados"
+            error_code="company.has_workers",
+            message="No se puede eliminar una empresa que tiene trabajadores asociados",
         )
 
 

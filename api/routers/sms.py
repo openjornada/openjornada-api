@@ -13,9 +13,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from ..auth.permissions import PermissionChecker
 from ..database import db, convert_id
 from ..models.auth import APIUser
+from ..models.i18n import DEFAULT_LOCALE, SUPPORTED_LOCALES
 from ..models.sms import (
-    DEFAULT_SMS_TEMPLATE,
     AVAILABLE_TAGS,
+    DEFAULT_SMS_TEMPLATES,
+    LEGACY_SMS_TEMPLATE_FIELD,
+    SMS_TEMPLATES_FIELD,
     SmsCompanyConfig,
     SmsCompanyConfigUpdate,
     SmsCreditsResponse,
@@ -32,7 +35,10 @@ from ..models.sms import (
     SmsTemplateUpdate,
     SmsWorkerConfig,
     SmsWorkerConfigUpdate,
+    resolve_sms_reminder_templates,
 )
+from ..utils.errors import raise_api_error
+from ..utils.sms_length import sms_length, sms_segment_limit
 
 router = APIRouter()
 
@@ -43,9 +49,10 @@ def _validate_phone_number(phone: str) -> str:
     """Validate and clean phone number format."""
     cleaned = phone.strip().replace(" ", "").replace("-", "")
     if not _PHONE_PATTERN.match(cleaned):
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Formato de teléfono inválido: {phone}"
+            error_code="sms.invalid_phone",
+            message=f"Formato de teléfono inválido: {phone}",
         )
     return cleaned
 
@@ -58,9 +65,10 @@ async def _get_first_active_company() -> dict:
     """Return the first non-deleted company, raising 404 if none found."""
     company = await db.Companies.find_one({"deleted_at": None}, sort=[("created_at", 1)])
     if not company:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="No se encontro ninguna empresa activa"
+            error_code="company.not_found",
+            message="No se encontro ninguna empresa activa",
         )
     return company
 
@@ -83,27 +91,62 @@ def _doc_to_sms_message(doc: dict) -> SmsMessage:
 
 
 # ============================================================================
-# SMS Template endpoints
+# SMS Template endpoints (per-locale map)
 # ============================================================================
 
 async def _build_template_response() -> SmsTemplateResponse:
-    """Build template response reading from DB or using default."""
+    """Build the per-locale template response reading customized texts from DB.
+
+    ``templates`` contains only customized locales (legacy single-string
+    settings are lazily surfaced as ``es``); the frontend renders the effective
+    text per tab as ``templates[locale] ?? default_templates[locale]``.
+    """
     settings = await db.Settings.find_one()
-    template = DEFAULT_SMS_TEMPLATE
-    if settings and "sms_reminder_template" in settings:
-        template = settings["sms_reminder_template"]
     return SmsTemplateResponse(
-        template=template,
-        default_template=DEFAULT_SMS_TEMPLATE,
+        templates=resolve_sms_reminder_templates(settings),
+        default_templates=dict(DEFAULT_SMS_TEMPLATES),
+        supported_locales=list(SUPPORTED_LOCALES),
         available_tags=AVAILABLE_TAGS,
     )
+
+
+def _validate_template_locale(locale: Optional[str]) -> str:
+    """Resolve + validate the target locale (absent → 'es' for back-compat)."""
+    target = locale or DEFAULT_LOCALE
+    if target not in SUPPORTED_LOCALES:
+        raise_api_error(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            error_code="sms.invalid_locale",
+            message=f"Idioma no soportado: {target}. Soportados: {', '.join(SUPPORTED_LOCALES)}",
+        )
+    return target
+
+
+def _validate_single_segment(template: str) -> None:
+    """Reject a template that would not fit in a single SMS segment.
+
+    Limit is dynamic per encoding: 160 for GSM-7 text, 70 when any character
+    forces UCS-2 (e.g. the acute tildes á í ó ú).
+    """
+    limit = sms_segment_limit(template)
+    length = sms_length(template)
+    if length > limit:
+        encoding = "GSM-7" if limit == 160 else "UCS-2"
+        raise_api_error(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            error_code="sms.template_exceeds_segment",
+            message=(
+                f"La plantilla excede un único SMS: {length} caracteres en codificación "
+                f"{encoding} (límite {limit})."
+            ),
+        )
 
 
 @router.get("/sms/template", response_model=SmsTemplateResponse)
 async def get_sms_template(
     current_user: APIUser = Depends(PermissionChecker("manage_sms_config"))
 ):
-    """Get the current SMS reminder template."""
+    """Get the SMS reminder templates (customized map + defaults per locale)."""
     return await _build_template_response()
 
 
@@ -112,29 +155,48 @@ async def update_sms_template(
     body: SmsTemplateUpdate,
     current_user: APIUser = Depends(PermissionChecker("manage_sms_config"))
 ):
-    """Update the SMS reminder template."""
+    """
+    Update the SMS reminder template of a single locale.
+
+    ``locale`` omitted → ``es`` (backwards compatible with the old single
+    template). The text must fit a single SMS segment (≤160 GSM-7 / ≤70 UCS-2).
+    A legacy single-string ``sms_reminder_template`` is superseded atomically
+    by the map so it cannot resurface later.
+    """
+    target_locale = _validate_template_locale(body.locale)
+    _validate_single_segment(body.template)
+
     settings = await db.Settings.find_one()
     if settings:
-        await db.Settings.update_one(
-            {"_id": settings["_id"]},
-            {"$set": {"sms_reminder_template": body.template}},
-        )
+        update: dict = {"$set": {f"{SMS_TEMPLATES_FIELD}.{target_locale}": body.template}}
+        if target_locale == DEFAULT_LOCALE and settings.get(LEGACY_SMS_TEMPLATE_FIELD):
+            update["$unset"] = {LEGACY_SMS_TEMPLATE_FIELD: ""}
+        await db.Settings.update_one({"_id": settings["_id"]}, update)
     else:
-        await db.Settings.insert_one({"sms_reminder_template": body.template})
+        await db.Settings.insert_one(
+            {SMS_TEMPLATES_FIELD: {target_locale: body.template}}
+        )
     return await _build_template_response()
 
 
 @router.delete("/sms/template", response_model=SmsTemplateResponse)
 async def reset_sms_template(
+    locale: Optional[str] = Query(
+        None, description="Locale to reset to its default; omitted → 'es'"
+    ),
     current_user: APIUser = Depends(PermissionChecker("manage_sms_config"))
 ):
-    """Reset the SMS reminder template to default."""
+    """Reset one locale's reminder template to its default text."""
+    target_locale = _validate_template_locale(locale)
+
     settings = await db.Settings.find_one()
     if settings:
-        await db.Settings.update_one(
-            {"_id": settings["_id"]},
-            {"$unset": {"sms_reminder_template": ""}},
-        )
+        unset: dict = {f"{SMS_TEMPLATES_FIELD}.{target_locale}": ""}
+        # Resetting 'es' must also drop the legacy single template, otherwise
+        # the lazy migration would resurrect it as the customized 'es' text.
+        if target_locale == DEFAULT_LOCALE and settings.get(LEGACY_SMS_TEMPLATE_FIELD):
+            unset[LEGACY_SMS_TEMPLATE_FIELD] = ""
+        await db.Settings.update_one({"_id": settings["_id"]}, {"$unset": unset})
     return await _build_template_response()
 
 
@@ -192,13 +254,14 @@ async def get_company_sms_config(
     try:
         oid = ObjectId(company_id)
     except InvalidId:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Formato de ID inválido")
+        raise_api_error(status_code=status.HTTP_400_BAD_REQUEST, error_code="sms.invalid_id", message="Formato de ID inválido")
     company = await db.Companies.find_one({"_id": oid, "deleted_at": None})
 
     if not company:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Empresa no encontrada"
+            error_code="company.not_found",
+            message="Empresa no encontrada",
         )
 
     sms_config = company.get("sms_config", {})
@@ -215,13 +278,14 @@ async def patch_company_sms_config(
     try:
         oid = ObjectId(company_id)
     except InvalidId:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Formato de ID inválido")
+        raise_api_error(status_code=status.HTTP_400_BAD_REQUEST, error_code="sms.invalid_id", message="Formato de ID inválido")
     company = await db.Companies.find_one({"_id": oid, "deleted_at": None})
 
     if not company:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Empresa no encontrada"
+            error_code="company.not_found",
+            message="Empresa no encontrada",
         )
 
     existing = company.get("sms_config", {})
@@ -252,13 +316,14 @@ async def get_worker_sms_config(
     try:
         oid = ObjectId(worker_id)
     except InvalidId:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Formato de ID inválido")
+        raise_api_error(status_code=status.HTTP_400_BAD_REQUEST, error_code="sms.invalid_id", message="Formato de ID inválido")
     worker = await db.Workers.find_one({"_id": oid, "deleted_at": None})
 
     if not worker:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Trabajador no encontrado"
+            error_code="worker.not_found",
+            message="Trabajador no encontrado",
         )
 
     sms_config = worker.get("sms_config", {})
@@ -279,20 +344,22 @@ async def send_worker_sms(
     try:
         oid = ObjectId(worker_id)
     except InvalidId:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Formato de ID inválido")
+        raise_api_error(status_code=status.HTTP_400_BAD_REQUEST, error_code="sms.invalid_id", message="Formato de ID inválido")
     worker = await db.Workers.find_one({"_id": oid, "deleted_at": None})
 
     if not worker:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Trabajador no encontrado"
+            error_code="worker.not_found",
+            message="Trabajador no encontrado",
         )
 
     phone_number = worker.get("phone_number", "")
     if not phone_number:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="El trabajador no tiene número de teléfono"
+            error_code="sms.worker_no_phone",
+            message="El trabajador no tiene número de teléfono",
         )
 
     phone_number = _validate_phone_number(phone_number)
@@ -325,13 +392,14 @@ async def patch_worker_sms_config(
     try:
         oid = ObjectId(worker_id)
     except InvalidId:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Formato de ID inválido")
+        raise_api_error(status_code=status.HTTP_400_BAD_REQUEST, error_code="sms.invalid_id", message="Formato de ID inválido")
     worker = await db.Workers.find_one({"_id": oid, "deleted_at": None})
 
     if not worker:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Trabajador no encontrado"
+            error_code="worker.not_found",
+            message="Trabajador no encontrado",
         )
 
     existing = worker.get("sms_config", {})
@@ -413,13 +481,14 @@ async def get_sms_message(
     try:
         oid = ObjectId(message_id)
     except InvalidId:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Formato de ID inválido")
+        raise_api_error(status_code=status.HTTP_400_BAD_REQUEST, error_code="sms.invalid_id", message="Formato de ID inválido")
     doc = await db.SmsLogs.find_one({"_id": oid})
 
     if not doc:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Mensaje SMS no encontrado"
+            error_code="sms.message_not_found",
+            message="Mensaje SMS no encontrado",
         )
 
     return _doc_to_sms_message(doc)
@@ -477,13 +546,14 @@ async def get_sms_log(
     try:
         oid = ObjectId(log_id)
     except InvalidId:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Formato de ID inválido")
+        raise_api_error(status_code=status.HTTP_400_BAD_REQUEST, error_code="sms.invalid_id", message="Formato de ID inválido")
     doc = await db.SmsLogs.find_one({"_id": oid})
 
     if not doc:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Registro SMS no encontrado"
+            error_code="sms.log_not_found",
+            message="Registro SMS no encontrado",
         )
 
     return SmsLogResponse(**convert_id(doc))

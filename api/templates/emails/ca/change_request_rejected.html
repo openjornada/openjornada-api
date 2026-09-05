@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Petició de canvi rebutjada</h2>
+<p>Hola {{ worker_name }},</p>
+<p>La teva petició de canvi de registre ha estat <strong>rebutjada</strong>.</p>
+
+<div style="background-color: #f8f9fa; padding: 15px; margin: 20px 0; border-left: 4px solid #dc3545;">
+    <h3>Detalls de la teva sol·licitud:</h3>
+    <ul>
+        <li><strong>Empresa:</strong> {{ company_name }}</li>
+        <li><strong>Registre:</strong> {{ record_type }} del {{ original_datetime.strftime('%d/%m/%Y a les %H:%M') }}</li>
+        <li><strong>Nova data/hora sol·licitada:</strong> {{ new_datetime.strftime('%d/%m/%Y a les %H:%M') }}</li>
+        <li><strong>El teu motiu:</strong> {{ reason }}</li>
+    </ul>
+</div>
+
+{% if admin_public_comment %}
+<div style="background-color: #fff3cd; padding: 15px; margin: 20px 0; border-left: 4px solid #ffc107;">
+    <h3>Comentari de l'administrador:</h3>
+    <p>{{ admin_public_comment }}</p>
+</div>
+{% endif %}
+
+<p>Si tens dubtes sobre aquesta decisió o necessites més informació, si us plau contacta amb el teu administrador.</p>
+{% endblock %}

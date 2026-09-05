@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Sol·licitud d'absència aprovada</h2>
+<p>Hola {{ worker_name }},</p>
+<p>La teva sol·licitud d'absència ha estat <strong>aprovada</strong>.</p>
+
+<div style="background-color: #d1fae5; padding: 15px; margin: 20px 0; border-left: 4px solid #10b981;">
+    <h3>Detalls de la teva sol·licitud:</h3>
+    <ul>
+        <li><strong>Empresa:</strong> {{ company_name }}</li>
+        <li><strong>Tipus:</strong> {{ absence_type_name }}</li>
+        <li><strong>Dates:</strong> {{ start_date.strftime('%d/%m/%Y') }} - {{ end_date.strftime('%d/%m/%Y') }}</li>
+        <li><strong>Dies computats:</strong> {{ days_computed }}</li>
+        {% if worker_comment %}
+        <li><strong>El teu comentari:</strong> {{ worker_comment }}</li>
+        {% endif %}
+    </ul>
+</div>
+
+<p style="color: #047857; font-weight: bold;">✓ La teva absència queda registrada al calendari de l'equip.</p>
+
+{% if admin_public_comment %}
+<div style="background-color: #f0f4ff; padding: 15px; margin: 20px 0; border-left: 4px solid #3b82f6;">
+    <h3>Comentari de l'administrador:</h3>
+    <p>{{ admin_public_comment }}</p>
+</div>
+{% endif %}
+
+<p>Si tens cap dubte, si us plau contacta amb el teu administrador.</p>
+{% endblock %}

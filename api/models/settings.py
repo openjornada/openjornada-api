@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr, Field
-from typing import Optional, Literal
+from typing import Dict, Optional, Literal
 
 from .sms import SmsProviderConfigInput, SmsProviderConfigStored, SmsProviderConfigResponse
 
@@ -116,6 +116,10 @@ class SettingsInDB(SettingsBase):
     id: str  # MongoDB _id converted to string
     backup_config: Optional[BackupConfigStored] = None
     sms_provider_config: Optional[SmsProviderConfigStored] = None
+    # SMS reminder templates by locale; only customized locales are stored.
+    # Legacy single-string ``sms_reminder_template`` documents are handled by
+    # the lazy migration in ``api.models.sms.resolve_sms_reminder_templates``.
+    sms_reminder_templates: Dict[str, str] = Field(default_factory=dict)
 
 
 class SettingsResponse(SettingsBase):

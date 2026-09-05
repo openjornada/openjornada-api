@@ -3,6 +3,8 @@ from typing import Optional, ClassVar, Literal, List
 from datetime import datetime
 from bson import ObjectId
 
+from .i18n import SupportedLocale
+
 # Simple function to convert MongoDB document to model-compatible format
 def convert_mongodb_doc(document):
     if document:
@@ -14,6 +16,8 @@ class APIUserBase(BaseModel):
     email: EmailStr
     is_active: bool = True
     role: Literal["admin", "tracker", "inspector"] = "tracker"  # Default role is tracker
+    # UI language preference; None = no preference (browser detection / "es").
+    language: Optional[SupportedLocale] = None
 
 class APIUserCreate(APIUserBase):
     password: str

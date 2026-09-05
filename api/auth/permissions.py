@@ -1,5 +1,6 @@
-from fastapi import HTTPException, status, Depends
+from fastapi import Depends, status
 from ..models.auth import APIUser
+from ..utils.errors import raise_api_error
 from .auth_handler import get_current_active_user
 
 # Define permissions for each role
@@ -65,9 +66,10 @@ class PermissionChecker:
     
     async def __call__(self, current_user: APIUser = Depends(get_current_active_user)):
         if not has_permission(current_user, self.required_permission):
-            raise HTTPException(
+            raise_api_error(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Not enough permissions. Required: {self.required_permission}"
+                error_code="auth.insufficient_permissions",
+                message=f"Not enough permissions. Required: {self.required_permission}",
             )
         return current_user
 
@@ -75,8 +77,9 @@ class PermissionChecker:
 def require_admin(current_user: APIUser = Depends(get_current_active_user)):
     """Dependency that requires admin role"""
     if current_user.role != "admin":
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin access required"
+            error_code="auth.admin_required",
+            message="Admin access required",
         )
     return current_user

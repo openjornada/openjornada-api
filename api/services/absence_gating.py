@@ -8,9 +8,10 @@ company that doesn't have the module active — this is the *authoritative*
 gate; admin and webapp UIs additionally hide the feature client-side.
 """
 from bson.objectid import ObjectId
-from fastapi import HTTPException, status
+from fastapi import status
 
 from ..database import db
+from ..utils.errors import raise_api_error
 
 
 async def ensure_absence_module_enabled(company_id: str) -> dict:
@@ -30,22 +31,25 @@ async def ensure_absence_module_enabled(company_id: str) -> dict:
     try:
         oid = ObjectId(company_id)
     except Exception:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Company not found",
+            error_code="absence.company_not_found",
+            message="Company not found",
         )
 
     company = await db.Companies.find_one({"_id": oid, "deleted_at": None})
     if company is None:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Company not found",
+            error_code="absence.company_not_found",
+            message="Company not found",
         )
 
     if not company.get("absence_management_enabled", False):
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="El módulo de gestión de ausencias no está activo para esta empresa",
+            error_code="absence.module_disabled",
+            message="El módulo de gestión de ausencias no está activo para esta empresa",
         )
 
     return company

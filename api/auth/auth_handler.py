@@ -4,13 +4,14 @@ import jwt
 import bcrypt
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHash, VerifyMismatchError
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, status
 from fastapi.security import OAuth2PasswordBearer
 import os
 from dotenv import load_dotenv
 
 from ..database import db
 from ..models.auth import TokenData, APIUserInDB, convert_mongodb_doc
+from ..utils.errors import api_error
 from ..utils.secrets import SECRET_KEY
 
 load_dotenv()
@@ -76,9 +77,10 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     return encoded_jwt
 
 async def get_current_user(token: str = Depends(oauth2_scheme)):
-    credentials_exception = HTTPException(
+    credentials_exception = api_error(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
+        error_code="auth.invalid_token",
+        message="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
@@ -97,6 +99,10 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
 
 async def get_current_active_user(current_user: APIUserInDB = Depends(get_current_user)):
     if not current_user.is_active:
-        raise HTTPException(status_code=400, detail="Inactive user")
+        raise api_error(
+            status_code=400,
+            error_code="auth.account_disabled",
+            message="Inactive user",
+        )
     return current_user
 

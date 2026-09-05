@@ -14,8 +14,19 @@ from typing import Optional
 import httpx
 
 from ..database import db
-from ..models.sms import DEFAULT_SMS_TEMPLATE
+from ..models.i18n import DEFAULT_LOCALE
+from ..models.sms import (
+    resolve_reminder_template,
+    resolve_sms_reminder_templates,
+)
 from ..utils.encryption import credential_encryption
+from ..utils.sms_length import (
+    fits_single_segment,
+    fold_to_gsm7,
+    sms_length,
+    sms_segment_limit,
+    truncate_to_single_segment,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -201,27 +212,73 @@ class SmsService:
     def is_unlimited_balance(self) -> bool:
         return self._unlimited_balance
 
-    async def _build_reminder_message(
-        self,
+    @staticmethod
+    def _substitute_markers(
+        template: str,
         worker_name: str,
         company_name: str,
         hours_open: float,
         reminder_number: int
     ) -> str:
-        """Build the SMS text from the DB template or use default."""
-        template = DEFAULT_SMS_TEMPLATE
-        try:
-            settings = await db.Settings.find_one()
-            if settings and "sms_reminder_template" in settings:
-                template = settings["sms_reminder_template"]
-        except Exception as e:
-            logger.error(f"[SMS] Error loading template from DB: {e}")
-
+        """Replace the four supported markers with the send-time values."""
         message = template
         message = message.replace("{%worker_name%}", worker_name)
         message = message.replace("{%company_name%}", company_name)
         message = message.replace("{%hours_open%}", f"{hours_open:.1f}")
         message = message.replace("{%reminder_number%}", str(reminder_number))
+        return message
+
+    async def _build_reminder_message(
+        self,
+        worker_name: str,
+        company_name: str,
+        hours_open: float,
+        reminder_number: int,
+        notification_locale: str = DEFAULT_LOCALE,
+    ) -> str:
+        """
+        Build the localized SMS reminder text for one company.
+
+        Template resolution chain (per design):
+        ``custom[locale] -> DEFAULT_SMS_TEMPLATES[locale] -> DEFAULT_SMS_TEMPLATES["es"]``
+        where ``locale`` is the recipient company's ``notification_language``.
+        Legacy single-string ``sms_reminder_template`` settings are treated as
+        the ``es`` custom template (lazy migration).
+
+        The result is guaranteed to fit a **single** SMS segment. Before
+        measuring, non-GSM-7 characters introduced by the substituted values
+        or a custom template (e.g. the ``á`` in "García") are transliterated
+        to GSM-7-compatible equivalents via :func:`fold_to_gsm7`, so an
+        accent never forces UCS-2 and its 70-char budget. If the folded text
+        still exceeds the dynamic limit (160 GSM-7 / 70 UCS-2 — e.g. emoji or
+        CJK in a name), it is truncated with a trailing ``…`` and a warning
+        is logged, so a multipart SMS is never sent.
+        """
+        templates: dict = {}
+        try:
+            settings = await db.Settings.find_one()
+            templates = resolve_sms_reminder_templates(settings)
+        except Exception as e:
+            logger.error(f"[SMS] Error loading templates from DB: {e}")
+
+        template = resolve_reminder_template(templates, notification_locale)
+
+        message = self._substitute_markers(
+            template, worker_name, company_name, hours_open, reminder_number
+        )
+
+        # Fold *before* measuring: one non-GSM-7 char (á, curly quote) would
+        # otherwise drop the budget 160 → 70 and truncate the instructions.
+        message = fold_to_gsm7(message)
+
+        if not fits_single_segment(message):
+            logger.warning(
+                "[SMS] Rendered reminder (%d septets, limit %d for locale %r) exceeds a "
+                "single segment; truncating to avoid a multipart SMS",
+                sms_length(message), sms_segment_limit(message), notification_locale,
+            )
+            message = truncate_to_single_segment(message)
+
         return message
 
     async def send_custom_sms(
@@ -286,9 +343,13 @@ class SmsService:
         hours_open: float,
         reminder_number: int,
         worker_id_number: Optional[str] = None,
+        notification_locale: str = DEFAULT_LOCALE,
     ) -> bool:
         """
         Send a shift reminder SMS and record it in SmsLogs / SmsCredits.
+
+        ``notification_locale`` is the recipient company's
+        ``notification_language``; it selects the reminder template.
 
         Returns True if sent successfully, False otherwise.
         """
@@ -309,7 +370,8 @@ class SmsService:
             worker_name=worker_name,
             company_name=company_name,
             hours_open=hours_open,
-            reminder_number=reminder_number
+            reminder_number=reminder_number,
+            notification_locale=notification_locale,
         )
 
         # 3. Send via provider

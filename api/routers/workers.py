@@ -19,17 +19,26 @@ from ..models.workers import (
     WorkerCompaniesRequest,
     WorkerMeRequest,
     WorkerMeResponse,
+    WorkerLanguageUpdate,
+    WorkerLanguageResponse,
     WorkerBulkImportRequest,
     WorkerBulkImportResponse,
     WorkerImportRow,
     WorkerImportRowResult,
 )
 from ..models.auth import APIUser
+from ..models.i18n import (
+    SUPPORTED_LOCALES,
+    resolve_notification_locale,
+    resolve_worker_ui_locale,
+)
 from ..database import db, convert_id
 from ..auth.auth_handler import get_password_hash, verify_password
 from ..auth.permissions import PermissionChecker
 from ..auth.subscription_guard import require_active_subscription
 from ..services.email_service import email_service
+from ..utils.company_locale import resolve_company_locale
+from ..utils.errors import raise_api_error
 from ..utils.worker_auth import _authenticate_worker
 
 router = APIRouter()
@@ -62,13 +71,18 @@ async def _send_welcome_email_to_worker(created_worker: dict):
 
     worker_name = f"{created_worker.get('first_name', '')} {created_worker.get('last_name', '')}".strip() or "Usuario"
 
+    # Worker-facing emails use the recipient company's notification language.
+    company_ids = created_worker.get("company_ids", [])
+    locale = await resolve_company_locale(str(company_ids[0]) if company_ids else None)
+
     try:
         await email_service.send_welcome_email(
             to_email=created_worker["email"],
             worker_name=worker_name,
             reset_token=reset_token,
             webapp_url=webapp_url,
-            contact_email=contact_email
+            contact_email=contact_email,
+            locale=locale,
         )
     except Exception as e:
         logger.error(f"[CREATE-WORKER] Error sending welcome email: {type(e).__name__}: {e}")
@@ -129,15 +143,17 @@ async def create_worker(
                     "deleted_at": None
                 })
                 if not company:
-                    raise HTTPException(
+                    raise_api_error(
                         status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"La empresa con ID {company_id} no existe o ha sido eliminada"
+                        error_code="worker.company_not_found",
+                        message=f"La empresa con ID {company_id} no existe o ha sido eliminada",
                     )
             except Exception as e:
                 logger.error(f"Error validating company {company_id}: {e}")
-                raise HTTPException(
+                raise_api_error(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"ID de empresa inválido: {company_id}"
+                    error_code="worker.invalid_company_id",
+                    message=f"ID de empresa inválido: {company_id}",
                 )
 
     # Check if email or id_number already exists
@@ -147,14 +163,16 @@ async def create_worker(
     ]}):
         # Determine which field is duplicated for a better error message
         if await db.Workers.find_one({"email": worker.email}):
-            raise HTTPException(
+            raise_api_error(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already registered"
+                error_code="worker.email_taken",
+                message="Email already registered",
             )
         else:
-            raise HTTPException(
+            raise_api_error(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="ID number (DNI) already registered"
+                error_code="worker.id_number_taken",
+                message="ID number (DNI) already registered",
             )
 
     # Hash the password
@@ -324,9 +342,10 @@ async def update_worker(
         worker = None
 
     if not worker:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Worker not found"
+            error_code="worker.not_found",
+            message="Worker not found",
         )
 
     # Prepare update data
@@ -338,9 +357,10 @@ async def update_worker(
 
         # Must have at least 1 company
         if not company_ids or len(company_ids) == 0:
-            raise HTTPException(
+            raise_api_error(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="El trabajador debe estar asociado a al menos una empresa"
+                error_code="worker.no_companies",
+                message="El trabajador debe estar asociado a al menos una empresa",
             )
 
         # Validate all companies exist and are not deleted
@@ -351,31 +371,35 @@ async def update_worker(
                     "deleted_at": None
                 })
                 if not company:
-                    raise HTTPException(
+                    raise_api_error(
                         status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"La empresa con ID {company_id} no existe o ha sido eliminada"
+                        error_code="worker.company_not_found",
+                        message=f"La empresa con ID {company_id} no existe o ha sido eliminada",
                     )
             except Exception as e:
                 logger.error(f"Error validating company {company_id}: {e}")
-                raise HTTPException(
+                raise_api_error(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"ID de empresa inválido: {company_id}"
+                    error_code="worker.invalid_company_id",
+                    message=f"ID de empresa inválido: {company_id}",
                 )
 
     # If email is being updated, check if it's already taken
     if "email" in update_data and update_data["email"] != worker["email"]:
         if await db.Workers.find_one({"email": update_data["email"]}):
-            raise HTTPException(
+            raise_api_error(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already registered"
+                error_code="worker.email_taken",
+                message="Email already registered",
             )
 
     # If id_number is being updated, check if it's already taken
     if "id_number" in update_data and update_data["id_number"] != worker["id_number"]:
         if await db.Workers.find_one({"id_number": update_data["id_number"]}):
-            raise HTTPException(
+            raise_api_error(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="ID number (DNI) already registered"
+                error_code="worker.id_number_taken",
+                message="ID number (DNI) already registered",
             )
 
     # Handle password update
@@ -449,9 +473,10 @@ async def get_worker(
         worker = None
 
     if not worker:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Worker not found"
+            error_code="worker.not_found",
+            message="Worker not found",
         )
 
     # Get company names
@@ -476,9 +501,10 @@ async def get_worker_by_id_number(
 ):
     worker = await db.Workers.find_one({"id_number": id_number, "deleted_at": None})
     if not worker:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Worker not found"
+            error_code="worker.not_found",
+            message="Worker not found",
         )
 
     return WorkerResponse(**convert_id(worker))
@@ -498,9 +524,10 @@ async def delete_worker(
         worker = None
 
     if not worker:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Worker not found"
+            error_code="worker.not_found",
+            message="Worker not found",
         )
     original_email = worker.get("email")
     new_email = f"{original_email}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
@@ -536,30 +563,34 @@ async def change_worker_password(request: ChangePasswordRequest):
     # Find worker by email (exclude deleted workers)
     worker = await db.Workers.find_one({"email": request.email, "deleted_at": None})
     if not worker:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid credentials"
+            error_code="worker.invalid_credentials",
+            message="Invalid credentials",
         )
 
     # Verify current password
     if not verify_password(request.current_password, worker["hashed_password"]):
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid credentials"
+            error_code="worker.invalid_credentials",
+            message="Invalid credentials",
         )
 
     # Validate new password is not empty/whitespace only
     if not request.new_password.strip():
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="New password cannot be empty"
+            error_code="worker.password_empty",
+            message="New password cannot be empty",
         )
 
     # Validate new password is different from current password
     if verify_password(request.new_password, worker["hashed_password"]):
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="New password must be different from current password"
+            error_code="worker.password_unchanged",
+            message="New password must be different from current password",
         )
 
     # Hash new password
@@ -582,6 +613,44 @@ async def change_worker_password(request: ChangePasswordRequest):
         )
 
     return {"message": "Password changed successfully"}
+
+
+@router.patch("/workers/language", response_model=WorkerLanguageResponse, status_code=status.HTTP_200_OK)
+async def update_worker_language(request: WorkerLanguageUpdate) -> WorkerLanguageResponse:
+    """
+    Allow workers to read/update their own UI language preference.
+
+    Same authentication pattern as the change-password endpoint: email +
+    current password in the body (no JWT). ``language=null`` clears the
+    preference so the worker inherits the company notification language
+    again. Unsupported codes are rejected with 422 / ``worker.invalid_locale``.
+    """
+    worker = await _authenticate_worker(request.email, request.password)
+
+    if request.language is not None and request.language not in SUPPORTED_LOCALES:
+        raise_api_error(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            error_code="worker.invalid_locale",
+            message=f"Idioma no soportado: {request.language}. Soportados: {', '.join(SUPPORTED_LOCALES)}",
+        )
+
+    await db.Workers.update_one(
+        {"_id": worker["_id"]},
+        {"$set": {"language": request.language, "updated_at": datetime.utcnow()}},
+    )
+
+    company_ids = worker.get("company_ids", [])
+    notification_locale = await resolve_company_locale(
+        str(company_ids[0]) if company_ids else None
+    )
+    return WorkerLanguageResponse(
+        language=request.language,
+        notification_language=notification_locale,
+        effective_language=resolve_worker_ui_locale(
+            {"language": request.language},
+            {"notification_language": notification_locale},
+        ),
+    )
 
 
 @router.post("/workers/forgot-password", status_code=status.HTTP_200_OK)
@@ -627,9 +696,10 @@ async def forgot_password(request: ForgotPasswordRequest):
 
         # Check if rate limit exceeded
         if len(recent_attempts) >= 3:
-            raise HTTPException(
+            raise_api_error(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Demasiados intentos de restablecimiento. Por favor, espera una hora antes de intentarlo de nuevo."
+                error_code="worker.rate_limited",
+                message="Demasiados intentos de restablecimiento. Por favor, espera una hora antes de intentarlo de nuevo.",
             )
 
         # Generate secure random token
@@ -672,12 +742,18 @@ async def forgot_password(request: ForgotPasswordRequest):
         # Send reset email (don't wait for result, catch errors silently)
         try:
             logger.info(f"[FORGOT-PASSWORD] Calling email service to send reset email to: {request.email}")
+            # Worker-facing emails use the recipient company's notification language.
+            worker_company_ids = worker.get("company_ids", [])
+            locale = await resolve_company_locale(
+                str(worker_company_ids[0]) if worker_company_ids else None
+            )
             email_result = await email_service.send_password_reset_email(
                 to_email=request.email,
                 worker_name=worker_name,
                 reset_token=reset_token,
                 webapp_url=webapp_url,
-                contact_email=contact_email
+                contact_email=contact_email,
+                locale=locale,
             )
             logger.info(f"[FORGOT-PASSWORD] Email service returned: {email_result}")
         except Exception as e:
@@ -714,30 +790,34 @@ async def reset_password(request: ResetPasswordRequest):
 
     # Check if token exists
     if not worker:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Token inválido o expirado"
+            error_code="worker.invalid_reset_token",
+            message="Token inválido o expirado",
         )
 
     # Check if token is expired
     reset_token_expires = worker.get("reset_token_expires")
     if not reset_token_expires or reset_token_expires < datetime.utcnow():
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Token inválido o expirado"
+            error_code="worker.expired_reset_token",
+            message="Token inválido o expirado",
         )
 
     # Validate new password
     if not request.new_password or not request.new_password.strip():
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="La contraseña no puede estar vacía"
+            error_code="worker.password_empty",
+            message="La contraseña no puede estar vacía",
         )
 
     if len(request.new_password) < 6:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="La contraseña debe tener al menos 6 caracteres"
+            error_code="worker.password_too_short",
+            message="La contraseña debe tener al menos 6 caracteres",
         )
 
     # Hash new password
@@ -787,17 +867,19 @@ async def get_worker_companies(
 
         if not worker:
             logger.info(f"[MY-COMPANIES] Worker not found: {request.email}")
-            raise HTTPException(
+            raise_api_error(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Credenciales inválidas"
+                error_code="worker.invalid_credentials",
+                message="Credenciales inválidas",
             )
 
         # Verify password
         if not verify_password(request.password, worker.get("hashed_password", "")):
             logger.info(f"[MY-COMPANIES] Invalid password for: {request.email}")
-            raise HTTPException(
+            raise_api_error(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Credenciales inválidas"
+                error_code="worker.invalid_credentials",
+                message="Credenciales inválidas",
             )
 
         logger.info(f"[MY-COMPANIES] Worker authenticated: {request.email}")
@@ -826,7 +908,10 @@ async def get_worker_companies(
                         "name": company["name"],
                         "created_at": company.get("created_at"),
                         "updated_at": company.get("updated_at"),
-                        "absence_management_enabled": company.get("absence_management_enabled", False)
+                        "absence_management_enabled": company.get("absence_management_enabled", False),
+                        # Raw fields so the webapp can resolve its UI locale:
+                        # worker.language ?? notification_language ?? navegador ?? es
+                        "notification_language": resolve_notification_locale(company)
                     })
             except Exception as e:
                 logger.warning(f"[MY-COMPANIES] Error loading company {company_id_str}: {e}")
@@ -863,17 +948,18 @@ async def get_worker_me(request: WorkerMeRequest) -> WorkerMeResponse:
     worker_id = str(worker["_id"])
     company_ids = [str(cid) for cid in worker.get("company_ids", [])]
 
-    # Resolve company names with a single $in query (preserves order)
+    # Resolve company names + notification languages with a single $in query
     oids = [ObjectId(cid) for cid in company_ids]
     companies_cursor = db.Companies.find(
         {"_id": {"$in": oids}, "deleted_at": None},
-        {"_id": 1, "name": 1},
+        {"_id": 1, "name": 1, "notification_language": 1},
     )
-    company_map: dict[str, str] = {
-        str(c["_id"]): c["name"]
+    company_map: dict[str, dict] = {
+        str(c["_id"]): c
         async for c in companies_cursor
     }
-    company_names = [company_map.get(cid, "") for cid in company_ids]
+    company_names = [company_map.get(cid, {}).get("name", "") for cid in company_ids]
+    first_company = company_map.get(company_ids[0]) if company_ids else None
 
     logger.info("[WORKER-ME] Returning profile for worker: %s", worker_id)
 
@@ -886,4 +972,8 @@ async def get_worker_me(request: WorkerMeRequest) -> WorkerMeResponse:
         default_timezone=worker.get("default_timezone", "UTC"),
         company_ids=company_ids,
         company_names=company_names,
+        # Raw language fields: the client applies the fallback chain
+        # worker.language ?? notification_language ?? navegador(soportado) ?? es
+        language=worker.get("language"),
+        notification_language=resolve_notification_locale(first_company),
     )

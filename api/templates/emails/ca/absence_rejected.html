@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Sol·licitud d'absència rebutjada</h2>
+<p>Hola {{ worker_name }},</p>
+<p>La teva sol·licitud d'absència ha estat <strong>rebutjada</strong>.</p>
+
+<div style="background-color: #f8f9fa; padding: 15px; margin: 20px 0; border-left: 4px solid #dc3545;">
+    <h3>Detalls de la teva sol·licitud:</h3>
+    <ul>
+        <li><strong>Empresa:</strong> {{ company_name }}</li>
+        <li><strong>Tipus:</strong> {{ absence_type_name }}</li>
+        <li><strong>Dates:</strong> {{ start_date.strftime('%d/%m/%Y') }} - {{ end_date.strftime('%d/%m/%Y') }}</li>
+        <li><strong>Dies sol·licitats:</strong> {{ days_computed }}</li>
+        {% if worker_comment %}
+        <li><strong>El teu comentari:</strong> {{ worker_comment }}</li>
+        {% endif %}
+    </ul>
+</div>
+
+{% if admin_public_comment %}
+<div style="background-color: #fff3cd; padding: 15px; margin: 20px 0; border-left: 4px solid #ffc107;">
+    <h3>Motiu del rebuig:</h3>
+    <p>{{ admin_public_comment }}</p>
+</div>
+{% endif %}
+
+<p>Si tens dubtes sobre aquesta decisió, si us plau contacta amb el teu administrador.</p>
+{% endblock %}

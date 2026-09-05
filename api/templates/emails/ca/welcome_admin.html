@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+
+{% block title %}Benvingut a {{ app_name }} - Panell d'Administració{% endblock %}
+
+{% block content %}
+<h2 style="margin: 0 0 20px 0; font-size: 24px; color: #1f2937;">
+    Benvingut a OpenJornada!
+</h2>
+
+<p style="margin: 0 0 15px 0; font-size: 16px;">Hola {{ username }},</p>
+
+<p style="margin: 0 0 15px 0; font-size: 16px;">
+    El teu compte d'<strong>administrador</strong> s'ha creat a la plataforma <strong>OpenJornada</strong>,
+    el sistema de registre de jornada laboral que et permet gestionar els fitxatges del teu equip
+    de manera senzilla i complir amb la normativa vigent.
+</p>
+
+<!-- URLs Section -->
+<table width="100%" cellpadding="0" cellspacing="0" style="margin: 25px 0;">
+    <tr>
+        <td style="background-color: #eff6ff;
+                   border-left: 4px solid #3b82f6;
+                   padding: 20px;
+                   border-radius: 4px;">
+            <p style="margin: 0 0 15px 0; font-size: 16px; font-weight: bold; color: #1e40af;">
+                📍 Les teves URLs d'accés:
+            </p>
+            <table width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                    <td style="padding: 8px 0;">
+                        <strong style="color: #1f2937;">Panell d'Administració:</strong><br>
+                        <a href="{{ admin_url }}" style="color: #3b82f6; text-decoration: none; word-break: break-all;">{{ admin_url }}</a>
+                    </td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px 0;">
+                        <strong style="color: #1f2937;">App de Treballadors:</strong><br>
+                        <a href="{{ webapp_url }}" style="color: #3b82f6; text-decoration: none; word-break: break-all;">{{ webapp_url }}</a>
+                    </td>
+                </tr>
+            </table>
+        </td>
+    </tr>
+</table>
+
+<!-- Quick Start Guide -->
+<table width="100%" cellpadding="0" cellspacing="0" style="margin: 25px 0;">
+    <tr>
+        <td style="background-color: #f0fdf4;
+                   border-left: 4px solid #22c55e;
+                   padding: 20px;
+                   border-radius: 4px;">
+            <p style="margin: 0 0 15px 0; font-size: 16px; font-weight: bold; color: #166534;">
+                🚀 Primers passos:
+            </p>
+            <ol style="margin: 0; padding-left: 20px; color: #15803d;">
+                <li style="margin-bottom: 10px;">
+                    <strong>Estableix la teva contrasenya</strong> amb el botó de sota
+                </li>
+                <li style="margin-bottom: 10px;">
+                    <strong>Entra al panell d'administració</strong> amb el teu correu i contrasenya
+                </li>
+                <li style="margin-bottom: 10px;">
+                    <strong>Configura la teva empresa</strong> des del menú de Paràmetres
+                </li>
+                <li style="margin-bottom: 10px;">
+                    <strong>Alta els teus treballadors</strong> i podran fitxar des de l'app
+                </li>
+            </ol>
+        </td>
+    </tr>
+</table>
+
+<p style="margin: 25px 0 20px 0; font-size: 16px; text-align: center;">
+    Per començar, estableix la teva contrasenya fent clic al botó següent:
+</p>
+
+<!-- Main Button -->
+<table width="100%" cellpadding="0" cellspacing="0" style="margin: 30px 0;">
+    <tr>
+        <td align="center">
+            <a href="{{ reset_link }}"
+               style="display: inline-block;
+                      padding: 16px 32px;
+                      background-color: #22c55e;
+                      color: white;
+                      text-decoration: none;
+                      border-radius: 6px;
+                      font-size: 18px;
+                      font-weight: bold;">
+                Establir la meva contrasenya
+            </a>
+        </td>
+    </tr>
+</table>
+
+<p style="margin: 20px 0 10px 0; font-size: 14px; color: #666;">
+    O copia i enganxa aquest enllaç al teu navegador:
+</p>
+
+<p style="margin: 0 0 30px 0;
+          padding: 15px;
+          background-color: #e5e7eb;
+          border-radius: 6px;
+          word-break: break-all;
+          font-size: 13px;
+          font-family: monospace;">
+    {{ reset_link }}
+</p>
+
+<!-- Warning Box -->
+<table width="100%" cellpadding="0" cellspacing="0" style="margin: 30px 0;">
+    <tr>
+        <td style="background-color: #fef3c7;
+                   border-left: 4px solid #f59e0b;
+                   padding: 20px;
+                   border-radius: 4px;">
+            <p style="margin: 0 0 10px 0; font-size: 16px; font-weight: bold; color: #92400e;">
+                ⚠️ Important:
+            </p>
+            <ul style="margin: 0; padding-left: 20px; color: #78350f;">
+                <li style="margin-bottom: 8px;">Aquest enllaç és vàlid durant <strong>24 hores</strong></li>
+                <li style="margin-bottom: 8px;">Si l'enllaç caduca, pots-ne sol·licitar un de nou des de "Has oblidat la contrasenya?" al panell d'administració</li>
+                <li style="margin-bottom: 8px;">Si no esperaves aquest correu, el pots ignorar</li>
+            </ul>
+        </td>
+    </tr>
+</table>
+
+<!-- Support Section -->
+<table width="100%" cellpadding="0" cellspacing="0" style="margin: 25px 0 0 0;">
+    <tr>
+        <td style="background-color: #faf5ff;
+                   border-left: 4px solid #a855f7;
+                   padding: 20px;
+                   border-radius: 4px;">
+            <p style="margin: 0 0 10px 0; font-size: 16px; font-weight: bold; color: #7e22ce;">
+                💬 Necessites ajuda?
+            </p>
+            <p style="margin: 0; color: #6b21a8;">
+                Contacta amb nosaltres a <a href="mailto:info@openjornada.es" style="color: #7c3aed; text-decoration: none; font-weight: bold;">info@openjornada.es</a>
+                i t'ajudarem amb molt de gust.
+            </p>
+        </td>
+    </tr>
+</table>
+{% endblock %}

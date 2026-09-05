@@ -22,6 +22,57 @@ logger = logging.getLogger(__name__)
 # Default timezone for email display (Spain)
 EMAIL_DISPLAY_TIMEZONE = "Europe/Madrid"
 
+# Localized subjects per email kind ({locale: template}). Fallback: 'es'.
+_EMAIL_SUBJECTS = {
+    "password_reset_worker": {
+        "es": "Recuperación de contraseña - {app_name}",
+        "en": "Password recovery - {app_name}",
+        "ca": "Recuperació de contrasenya - {app_name}",
+    },
+    "welcome_worker": {
+        "es": "Bienvenido a {app_name}",
+        "en": "Welcome to {app_name}",
+        "ca": "Benvingut a {app_name}",
+    },
+    "admin_password_reset": {
+        "es": "Recuperación de contraseña - {app_name}",
+        "en": "Password recovery - {app_name}",
+        "ca": "Recuperació de contrasenya - {app_name}",
+    },
+    "welcome_admin": {
+        "es": "Bienvenido a {app_name} - Panel de Administracion",
+        "en": "Welcome to {app_name} - Admin Panel",
+        "ca": "Benvingut a {app_name} - Panell d'Administració",
+    },
+    "change_request_accepted": {
+        "es": "Tu petición de cambio ha sido aceptada - {app_name}",
+        "en": "Your change request has been accepted - {app_name}",
+        "ca": "La teva petició de canvi ha estat acceptada - {app_name}",
+    },
+    "change_request_rejected": {
+        "es": "Tu petición de cambio ha sido rechazada - {app_name}",
+        "en": "Your change request has been rejected - {app_name}",
+        "ca": "La teva petició de canvi ha estat rebutjada - {app_name}",
+    },
+    "absence_approved": {
+        "es": "Tu solicitud de ausencia ha sido aprobada - {app_name}",
+        "en": "Your absence request has been approved - {app_name}",
+        "ca": "La teva sol·licitud d'absència ha estat aprovada - {app_name}",
+    },
+    "absence_rejected": {
+        "es": "Tu solicitud de ausencia ha sido rechazada - {app_name}",
+        "en": "Your absence request has been rejected - {app_name}",
+        "ca": "La teva sol·licitud d'absència ha estat rebutjada - {app_name}",
+    },
+}
+
+
+def _localized_subject(kind: str, locale: str, app_name: str) -> str:
+    """Subject line for *kind* in *locale*, falling back to Spanish."""
+    templates = _EMAIL_SUBJECTS[kind]
+    template = templates.get(locale) or templates["es"]
+    return template.format(app_name=app_name)
+
 
 def convert_to_local_timezone(dt: datetime, tz_name: str = EMAIL_DISPLAY_TIMEZONE) -> datetime:
     """
@@ -174,7 +225,7 @@ class EmailService:
             )
 
             # Email subject
-            subject = f"Recuperación de contraseña - {self.app_name}"
+            subject = _localized_subject("password_reset_worker", locale, self.app_name)
 
             # Run sync email sending in thread pool
             logger.info("[EMAIL] Executing email send in thread pool...")
@@ -240,7 +291,7 @@ class EmailService:
             )
 
             # Email subject
-            subject = f"Bienvenido a {self.app_name}"
+            subject = _localized_subject("welcome_worker", locale, self.app_name)
 
             # Run sync email sending in thread pool
             logger.info("[EMAIL] Executing email send in thread pool...")
@@ -307,7 +358,7 @@ class EmailService:
             )
 
             # Email subject
-            subject = f"Recuperación de contraseña - {self.app_name}"
+            subject = _localized_subject("admin_password_reset", locale, self.app_name)
 
             # Run sync email sending in thread pool
             logger.info("[EMAIL] Executing email send in thread pool...")
@@ -377,7 +428,7 @@ class EmailService:
             )
 
             # Email subject
-            subject = f"Bienvenido a {self.app_name} - Panel de Administracion"
+            subject = _localized_subject("welcome_admin", locale, self.app_name)
 
             # Run sync email sending in thread pool
             logger.info("[EMAIL] Executing admin welcome email send in thread pool...")
@@ -455,7 +506,7 @@ class EmailService:
             )
 
             # Email subject
-            subject = f"Tu petición de cambio ha sido rechazada - {self.app_name}"
+            subject = _localized_subject("change_request_rejected", locale, self.app_name)
 
             # Run sync email sending in thread pool
             logger.info("[EMAIL] Executing change request rejection email send in thread pool...")
@@ -533,7 +584,7 @@ class EmailService:
             )
 
             # Email subject
-            subject = f"Tu petición de cambio ha sido aceptada - {self.app_name}"
+            subject = _localized_subject("change_request_accepted", locale, self.app_name)
 
             # Send email
             logger.info("[EMAIL] Executing change request acceptance email send in thread pool...")
@@ -609,7 +660,7 @@ class EmailService:
                 locale=locale
             )
 
-            subject = f"Tu solicitud de ausencia ha sido aprobada - {self.app_name}"
+            subject = _localized_subject("absence_approved", locale, self.app_name)
 
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
@@ -682,7 +733,7 @@ class EmailService:
                 locale=locale
             )
 
-            subject = f"Tu solicitud de ausencia ha sido rechazada - {self.app_name}"
+            subject = _localized_subject("absence_rejected", locale, self.app_name)
 
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
