@@ -283,6 +283,14 @@ class TestRealtimeNotifications:
         company_id = "limit-test-company"
         now = datetime.now(timezone.utc)
         try:
+            # `unread_count` es global al tenant: otros tests pueden dejar
+            # notificaciones no leídas en la BD compartida. Leemos la línea
+            # base ANTES de insertar para que el assert no dependa del orden
+            # de ejecución ni de restos de otras ejecuciones.
+            resp = await async_client.get("/api/notifications", headers=admin_headers)
+            assert resp.status_code == 200, resp.text
+            baseline_unread = resp.json()["unread_count"]
+
             await test_db.notifications.delete_many({"company_id": company_id})
             await test_db.notifications.insert_many([
                 {
@@ -305,7 +313,7 @@ class TestRealtimeNotifications:
             assert len(mine) == NOTIFICATIONS_LIST_LIMIT
             dates = [i["created_at"] for i in data["items"]]
             assert dates == sorted(dates, reverse=True)
-            assert data["unread_count"] == NOTIFICATIONS_LIST_LIMIT + 5
+            assert data["unread_count"] == baseline_unread + NOTIFICATIONS_LIST_LIMIT + 5
         finally:
             await test_db.notifications.delete_many({"company_id": company_id})
             await test_db.APIUsers.delete_one({"email": "admin@test.com"})

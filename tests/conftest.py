@@ -55,6 +55,25 @@ def event_loop():
     _session_loop.close()
 
 
+@pytest.fixture(scope="session", autouse=True)
+async def purge_notifications_at_session_start():
+    """
+    Purga la colección `notifications` al INICIO de la sesión de tests.
+
+    Varios tests de integración (p. ej. test_complete_workflow) crean
+    notificaciones `fichaje.created` no leídas que quedan acumuladas entre
+    ejecuciones en la BD compartida; como `unread_count` de
+    GET /api/notifications es global al tenant, esos restos hacían fallar
+    asserts sobre el contador. Solo se purga `notifications`, que es la única
+    colección con fugas demostradas (mínimo cambio posible).
+    """
+    client = AsyncIOMotorClient(MONGO_URL)
+    try:
+        await client[DB_NAME].notifications.delete_many({})
+    finally:
+        client.close()
+
+
 @pytest.fixture(scope="function")
 async def test_db():
     """

@@ -2,6 +2,7 @@ from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, List, Literal
 from datetime import datetime
 
+from .i18n import SupportedLocale
 from .sms import SmsWorkerConfig
 
 class WorkerModel(BaseModel):
@@ -15,6 +16,8 @@ class WorkerModel(BaseModel):
     created_by: Optional[str] = None
     company_ids: List[str] = Field(..., min_length=1, description="Lista de IDs de empresas asociadas (mínimo 1)")
     send_welcome_email: Optional[bool] = Field(False, description="Enviar email de bienvenida")
+    # UI language preference; None = inherit the company notification_language
+    language: Optional[SupportedLocale] = None
 
 class WorkerUpdateModel(BaseModel):
     first_name: Optional[str] = None
@@ -25,6 +28,7 @@ class WorkerUpdateModel(BaseModel):
     password: Optional[str] = None  # Para actualizar la contraseña
     company_ids: Optional[List[str]] = Field(None, min_length=1, description="Lista de IDs de empresas asociadas")
     sms_enabled: Optional[bool] = None
+    language: Optional[SupportedLocale] = None
 
 class WorkerResponse(BaseModel):
     id: str
@@ -40,6 +44,7 @@ class WorkerResponse(BaseModel):
     company_ids: List[str] = Field(default_factory=list, description="Lista de IDs de empresas asociadas")
     company_names: List[str] = Field(default_factory=list, description="Nombres de las empresas asociadas")
     sms_config: Optional[SmsWorkerConfig] = None
+    language: Optional[SupportedLocale] = None
     # No incluimos la contraseña en la respuesta
 
 class ChangePasswordRequest(BaseModel):
@@ -74,6 +79,7 @@ class WorkerInDB(BaseModel):
     deleted_at: Optional[datetime] = None
     deleted_by: Optional[str] = None
     company_ids: List[str] = Field(default_factory=list)
+    language: Optional[SupportedLocale] = None
     # Password reset fields
     reset_token: Optional[str] = None
     reset_token_expires: Optional[datetime] = None
@@ -94,7 +100,13 @@ class WorkerMeRequest(BaseModel):
 
 
 class WorkerMeResponse(BaseModel):
-    """Worker self-profile response — no sensitive fields."""
+    """Worker self-profile response — no sensitive fields.
+
+    ``language`` is the worker's own UI preference (``None`` = inherit) and
+    ``notification_language`` the first associated company's notification
+    language, so the webapp can resolve its locale with the contract chain
+    ``language ?? notification_language ?? navegador ?? es``.
+    """
 
     id: str
     first_name: str
@@ -104,6 +116,31 @@ class WorkerMeResponse(BaseModel):
     default_timezone: str
     company_ids: List[str]
     company_names: List[str]
+    language: Optional[SupportedLocale] = None
+    notification_language: str = "es"
+
+
+class WorkerLanguageUpdate(BaseModel):
+    """Request body for a worker to set their own UI language.
+
+    Authenticates with email + password (same pattern as the worker
+    change-password endpoint). ``language=None`` clears the preference so the
+    worker inherits the company notification language again. ``language`` is a
+    plain ``str`` on purpose: unsupported codes are rejected by the endpoint
+    with a stable ``error_code`` (422).
+    """
+
+    email: EmailStr
+    password: str
+    language: Optional[str] = None
+
+
+class WorkerLanguageResponse(BaseModel):
+    """Effective language info returned after a worker language update."""
+
+    language: Optional[SupportedLocale] = None
+    notification_language: str = "es"
+    effective_language: str = "es"
 
 
 # Máximo de filas por lote en la importación masiva (evita requests enormes

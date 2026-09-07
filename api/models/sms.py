@@ -1,6 +1,6 @@
 import re
 from pydantic import BaseModel, Field, field_validator
-from typing import Optional, Literal
+from typing import Dict, List, Optional, Literal
 from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -9,7 +9,74 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 # Shared Constants
 # ============================================================================
 
-DEFAULT_SMS_TEMPLATE = "OpenJornada: Hola {%worker_name%}, llevas {%hours_open%}h con tu jornada abierta en {%company_name%}. Si ya terminaste, no olvides registrar tu salida. Recordatorio {%reminder_number%}."
+# Reminder templates by locale (global per tenant, differentiated by locale).
+# The recipient company's ``notification_language`` selects which one is used.
+#
+# All texts are pure GSM-7 (no á í ó ú or other UCS-2 characters) so the 160
+# character single-segment budget is preserved. Keep the four markers intact:
+# ``{%worker_name%}``, ``{%company_name%}``, ``{%hours_open%}``,
+# ``{%reminder_number%}``.
+DEFAULT_SMS_TEMPLATES: Dict[str, str] = {
+    "es": (
+        "OpenJornada: Hola {%worker_name%}, llevas {%hours_open%}h con jornada "
+        "abierta en {%company_name%}. Registra tu salida. "
+        "Aviso {%reminder_number%}."
+    ),
+    "en": (
+        "OpenJornada: Hi {%worker_name%}, your shift at {%company_name%} is "
+        "open {%hours_open%}h. If done, register your exit. "
+        "Reminder {%reminder_number%}."
+    ),
+    "ca": (
+        "OpenJornada: Hola {%worker_name%}, portes {%hours_open%}h de jornada "
+        "oberta a {%company_name%}. Registra la sortida. "
+        "Avis {%reminder_number%}."
+    ),
+}
+
+# Kept for backwards compatibility with any caller that still expects the
+# single Spanish text. New code must use ``DEFAULT_SMS_TEMPLATES``.
+DEFAULT_SMS_TEMPLATE = DEFAULT_SMS_TEMPLATES["es"]
+
+SMS_MARKER_TAGS = ("{%worker_name%}", "{%company_name%}", "{%hours_open%}", "{%reminder_number%}")
+
+# Legacy field name (single global string template) kept for the lazy
+# migration to the per-locale map.
+LEGACY_SMS_TEMPLATE_FIELD = "sms_reminder_template"
+SMS_TEMPLATES_FIELD = "sms_reminder_templates"
+
+
+def resolve_sms_reminder_templates(settings_doc: Optional[dict]) -> Dict[str, str]:
+    """Lazily migrate the legacy single template into the per-locale map.
+
+    Reads a raw MongoDB Settings document and returns the *customized* locale
+    map. If the legacy ``sms_reminder_template`` string exists and the map has
+    no entry for ``es``, the legacy text is treated as the ``es`` template.
+    No write is performed (idempotent, migration-free).
+    """
+    if not settings_doc:
+        return {}
+    templates = dict(settings_doc.get(SMS_TEMPLATES_FIELD) or {})
+    legacy = settings_doc.get(LEGACY_SMS_TEMPLATE_FIELD)
+    if isinstance(legacy, str) and legacy and "es" not in templates:
+        templates["es"] = legacy
+    return templates
+
+
+def resolve_reminder_template(
+    custom_templates: Dict[str, str],
+    locale: Optional[str],
+) -> str:
+    """Reminder template text for *locale*.
+
+    Chain: custom[locale] -> DEFAULT_SMS_TEMPLATES[locale] ->
+    DEFAULT_SMS_TEMPLATES["es"].
+    """
+    text = custom_templates.get(locale or "")
+    if isinstance(text, str) and text:
+        return text
+    return DEFAULT_SMS_TEMPLATES.get(locale or "", DEFAULT_SMS_TEMPLATES["es"])
+
 
 AVAILABLE_TAGS = [
     {"tag": "{%worker_name%}", "description": "Nombre completo del trabajador", "example": "Juan García"},
@@ -240,12 +307,25 @@ class SmsDashboardResponse(BaseModel):
 # ============================================================================
 
 class SmsTemplateResponse(BaseModel):
-    """Response for SMS reminder template."""
-    template: str
-    default_template: str
+    """Response for SMS reminder templates (map by locale).
+
+    ``templates`` contains only the locales the admin has customized (plus the
+    lazily migrated legacy ``es`` text); any locale absent from it uses its
+    entry in ``default_templates``.
+    """
+    templates: Dict[str, str]
+    default_templates: Dict[str, str]
+    supported_locales: List[str]
     available_tags: list[dict]
 
 
 class SmsTemplateUpdate(BaseModel):
-    """Request body for updating the SMS reminder template."""
-    template: str = Field(..., min_length=10, max_length=480)
+    """Request body for updating the SMS reminder template of one locale.
+
+    ``locale`` is optional for backwards compatibility: when omitted the
+    update targets ``es``. The single-segment fit (<=160 GSM-7 / <=70 UCS-2
+    chars) is validated by the router so failures come back as a proper
+    HTTP error instead of a 422 schema error.
+    """
+    locale: Optional[str] = Field(None, min_length=2, max_length=5)
+    template: str = Field(..., min_length=10)

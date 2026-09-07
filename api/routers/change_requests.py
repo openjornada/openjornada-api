@@ -1,5 +1,5 @@
 import os
-from fastapi import APIRouter, HTTPException, status, Depends, Query, Body
+from fastapi import APIRouter, status, Depends, Query, Body
 from datetime import datetime, date, timezone as dt_timezone
 from typing import List, Optional
 from bson.objectid import ObjectId
@@ -20,6 +20,8 @@ from ..services.change_request_validator import ChangeRequestValidator
 from ..services.email_service import EmailService
 from ..services.integrity_service import IntegrityService
 from ..services.time_calculation_service import TimeCalculationService
+from ..utils.company_locale import resolve_company_locale
+from ..utils.errors import raise_api_error
 from ..utils.worker_auth import _authenticate_worker, _verify_worker_company_access
 
 router = APIRouter()
@@ -65,6 +67,7 @@ async def _recompute_integrity_hash(record_id: ObjectId) -> None:
     )
 
 
+
 def prepare_change_request_response(cr: dict) -> dict:
     """
     Prepara un documento de MongoDB de change request para ChangeRequestResponse.
@@ -81,6 +84,18 @@ def prepare_change_request_response(cr: dict) -> dict:
     data["reviewed_at"] = ensure_utc_aware(data.get("reviewed_at"))
 
     return data
+
+
+# Localized display label for the record type in worker notifications.
+_RECORD_TYPE_LABELS = {
+    "entry": {"es": "Entrada", "en": "Clock-in", "ca": "Entrada"},
+    "exit": {"es": "Salida", "en": "Clock-out", "ca": "Sortida"},
+}
+
+
+def _record_type_display(original_type: Optional[str], locale: str) -> str:
+    labels = _RECORD_TYPE_LABELS.get(original_type or "", _RECORD_TYPE_LABELS["entry"])
+    return labels.get(locale) or labels["es"]
 
 
 @router.post("/", response_model=ChangeRequestResponse, status_code=status.HTTP_201_CREATED)
@@ -105,25 +120,28 @@ async def create_change_request(
     })
 
     if not worker:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Worker not found or has been deleted"
+            error_code="worker.not_found",
+            message="Worker not found or has been deleted",
         )
 
     # Verify password
     if not verify_password(request_data.password, worker["hashed_password"]):
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid credentials"
+            error_code="worker.invalid_credentials",
+            message="Invalid credentials",
         )
 
     # 2. Get original time record
     try:
         time_record_id = ObjectId(request_data.time_record_id)
     except Exception:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid time record ID format"
+            error_code="change_request.invalid_time_record_id",
+            message="Invalid time record ID format",
         )
 
     time_record = await db.TimeRecords.find_one({
@@ -133,9 +151,10 @@ async def create_change_request(
     })
 
     if not time_record:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Time record not found or does not belong to this worker"
+            error_code="change_request.time_record_not_found",
+            message="Time record not found or does not belong to this worker",
         )
 
     # 3. Get original timestamp from record
@@ -143,16 +162,18 @@ async def create_change_request(
     original_timestamp = ensure_utc_aware(time_record.get("timestamp"))
 
     if not original_timestamp:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Time record has no valid timestamp"
+            error_code="change_request.time_record_invalid",
+            message="Time record has no valid timestamp",
         )
 
     # 4. Verify new timestamp is different
     if request_data.new_timestamp == original_timestamp:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="New timestamp must be different from original"
+            error_code="change_request.same_timestamp",
+            message="New timestamp must be different from original",
         )
 
     # 5. Create change request document
@@ -191,9 +212,10 @@ async def create_change_request(
         return ChangeRequestResponse(**convert_id(change_request_doc))
     except Exception as e:
         if "duplicate key error" in str(e).lower():
-            raise HTTPException(
+            raise_api_error(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="You already have a pending change request. Wait for it to be reviewed before creating a new one."
+                error_code="change_request.pending_exists",
+                message="You already have a pending change request. Wait for it to be reviewed before creating a new one.",
             )
         raise
 
@@ -221,16 +243,18 @@ async def check_pending_request(
     })
 
     if not worker:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Worker not found"
+            error_code="worker.not_found",
+            message="Worker not found",
         )
 
     # Verify password
     if not verify_password(password, worker["hashed_password"]):
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid credentials"
+            error_code="worker.invalid_credentials",
+            message="Invalid credentials",
         )
 
     # Check for pending request
@@ -302,18 +326,20 @@ async def get_change_request(
     try:
         cr_obj_id = ObjectId(change_request_id)
     except Exception:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid change request ID format"
+            error_code="change_request.invalid_id",
+            message="Invalid change request ID format",
         )
 
     # Find change request
     cr = await db.ChangeRequests.find_one({"_id": cr_obj_id})
 
     if not cr:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Change request not found"
+            error_code="change_request.not_found",
+            message="Change request not found",
         )
 
     # Convert to response
@@ -350,9 +376,10 @@ async def update_change_request(
     try:
         cr_obj_id = ObjectId(change_request_id)
     except Exception:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid change request ID format"
+            error_code="change_request.invalid_id",
+            message="Invalid change request ID format",
         )
 
     # 1. Atomic update - only succeeds if status is currently "pending"
@@ -377,18 +404,20 @@ async def update_change_request(
     )
 
     if not change_request:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Change request not found, already processed, or not pending"
+            error_code="change_request.not_pending",
+            message="Change request not found, already processed, or not pending",
         )
 
     # 2. Verify original time record exists and wasn't modified
     try:
         time_record_id = ObjectId(change_request.get("time_record_id"))
     except Exception:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid time record ID in change request"
+            error_code="change_request.invalid_time_record_id",
+            message="Invalid time record ID in change request",
         )
 
     time_record = await db.TimeRecords.find_one({"_id": time_record_id})
@@ -402,9 +431,10 @@ async def update_change_request(
                 "admin_public_comment": "Original time record was deleted"
             }}
         )
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_410_GONE,
-            detail="Original time record was deleted"
+            error_code="change_request.original_record_deleted",
+            message="Original time record was deleted",
         )
 
     # 3. Process based on status
@@ -426,9 +456,10 @@ async def update_change_request(
                 {"$set": {"status": ChangeRequestStatus.PENDING.value}}
             )
             error_msg = "; ".join(errors)
-            raise HTTPException(
+            raise_api_error(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Cannot approve: {error_msg}"
+                error_code="change_request.validation_failed",
+                message=f"Cannot approve: {error_msg}",
             )
 
         # Update original time record - always use 'timestamp' field now
@@ -506,7 +537,8 @@ async def update_change_request(
 
         if worker:
             try:
-                record_type_display = "Entrada" if change_request.get("original_type") == "entry" else "Salida"
+                notification_locale = await resolve_company_locale(change_request.get("company_id"))
+                record_type_display = _record_type_display(change_request.get("original_type"), notification_locale)
 
                 await email_service.send_change_request_accepted_email(
                     to_email=change_request.get("worker_email"),
@@ -518,7 +550,7 @@ async def update_change_request(
                     reason=change_request.get("reason"),
                     admin_public_comment=request_data.admin_public_comment or "",
                     contact_email=os.getenv("SMTP_FROM_EMAIL", "support@openjornada.es"),
-                    locale="es"
+                    locale=notification_locale
                 )
             except Exception as e:
                 # Log error but don't fail the request
@@ -533,7 +565,8 @@ async def update_change_request(
 
         if worker:
             try:
-                record_type_display = "Entrada" if change_request.get("original_type") == "entry" else "Salida"
+                notification_locale = await resolve_company_locale(change_request.get("company_id"))
+                record_type_display = _record_type_display(change_request.get("original_type"), notification_locale)
 
                 await email_service.send_change_request_rejected_email(
                     to_email=change_request.get("worker_email"),
@@ -545,7 +578,7 @@ async def update_change_request(
                     reason=change_request.get("reason"),
                     admin_public_comment=request_data.admin_public_comment or "",
                     contact_email=os.getenv("SMTP_FROM_EMAIL", "support@openjornada.es"),
-                    locale="es"
+                    locale=notification_locale
                 )
             except Exception as e:
                 # Log error but don't fail the request

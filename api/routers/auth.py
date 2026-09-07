@@ -5,6 +5,8 @@ import secrets
 import logging
 import os
 
+from bson import ObjectId
+
 from ..auth.auth_handler import (
     authenticate_user,
     create_access_token,
@@ -14,8 +16,15 @@ from ..auth.auth_handler import (
 )
 from ..auth.permissions import PermissionChecker
 from ..models.auth import Token, APIUserCreate, APIUser, ForgotPasswordRequest, ResetPasswordRequest
+from ..models.i18n import (
+    DEFAULT_LOCALE,
+    SUPPORTED_LOCALES,
+    LanguagePreferenceUpdate,
+    resolve_admin_ui_locale,
+)
 from ..database import db, convert_id
 from ..services.email_service import email_service
+from ..utils.errors import raise_api_error
 from ..utils.rate_limit import limiter, LOGIN_RATE_LIMIT
 
 router = APIRouter()
@@ -27,9 +36,10 @@ async def login_for_access_token(request: Request, form_data: OAuth2PasswordRequ
     # Note: form_data.username can contain either username or email
     user = await authenticate_user(form_data.username, form_data.password)
     if not user:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
+            error_code="auth.invalid_credentials",
+            message="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -45,9 +55,10 @@ async def create_user(user: APIUserCreate, current_user: APIUser = Depends(get_c
         {"$or": [{"username": user.username}, {"email": user.email}]}
     )
     if db_user:
-        raise HTTPException(
+        raise_api_error(
             status_code=400,
-            detail="Username or email already registered"
+            error_code="auth.duplicate_user",
+            message="Username or email already registered",
         )
     
     # Create new user
@@ -65,6 +76,34 @@ async def create_user(user: APIUserCreate, current_user: APIUser = Depends(get_c
 @router.get("/users/me", response_model=APIUser)
 async def read_users_me(current_user: APIUser = Depends(get_current_active_user)):
     return current_user
+
+@router.patch("/users/me", response_model=APIUser)
+async def update_users_me(
+    preference: LanguagePreferenceUpdate,
+    current_user: APIUser = Depends(get_current_active_user),
+):
+    """
+    Update the authenticated admin user's own UI language preference.
+
+    ``language=null`` clears the preference (the frontend then falls back to
+    browser detection / the global default). Only the caller's own profile can
+    be changed — there is no user-id parameter by design. An unsupported
+    locale is rejected with 422 and ``settings.invalid_locale``.
+    """
+    if preference.language is not None and preference.language not in SUPPORTED_LOCALES:
+        raise_api_error(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            error_code="settings.invalid_locale",
+            message=f"Idioma no soportado: {preference.language}. Soportados: {', '.join(SUPPORTED_LOCALES)}",
+        )
+
+    await db.APIUsers.update_one(
+        {"_id": ObjectId(current_user.id)},
+        {"$set": {"language": preference.language}},
+    )
+
+    updated = await db.APIUsers.find_one({"_id": ObjectId(current_user.id)})
+    return APIUser(**convert_id(updated))
 
 @router.get("/users/", response_model=list[APIUser], dependencies=[Depends(PermissionChecker("view_users"))])
 async def list_users(current_user: APIUser = Depends(get_current_active_user)):
@@ -113,9 +152,10 @@ async def forgot_password(request: ForgotPasswordRequest):
 
         # Check if rate limit exceeded
         if len(recent_attempts) >= 3:
-            raise HTTPException(
+            raise_api_error(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Demasiados intentos de restablecimiento. Por favor, espera una hora antes de intentarlo de nuevo."
+                error_code="auth.rate_limited",
+                message="Demasiados intentos de restablecimiento. Por favor, espera una hora antes de intentarlo de nuevo.",
             )
 
         # Generate secure random token
@@ -155,12 +195,17 @@ async def forgot_password(request: ForgotPasswordRequest):
         # Send reset email (don't wait for result, catch errors silently)
         try:
             logger.info(f"[FORGOT-PASSWORD] Calling email service to send reset email to: {request.email}")
+            # Emails to admins follow the admin's own UI language (fallback es):
+            # the forgot-password flow is unauthenticated, so the stored
+            # preference on the user document is the only signal available.
+            admin_locale = resolve_admin_ui_locale(user) or DEFAULT_LOCALE
             email_result = await email_service.send_admin_password_reset_email(
                 to_email=request.email,
                 username=username,
                 reset_token=reset_token,
                 admin_url=admin_url,
-                contact_email=contact_email
+                contact_email=contact_email,
+                locale=admin_locale
             )
             logger.info(f"[FORGOT-PASSWORD] Email service returned: {email_result}")
         except Exception as e:
@@ -196,30 +241,34 @@ async def reset_password(request: ResetPasswordRequest):
 
     # Check if token exists
     if not user:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Token inválido o expirado"
+            error_code="auth.invalid_reset_token",
+            message="Token inválido o expirado",
         )
 
     # Check if token is expired
     reset_token_expires = user.get("reset_token_expires")
     if not reset_token_expires or reset_token_expires < datetime.utcnow():
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Token inválido o expirado"
+            error_code="auth.expired_reset_token",
+            message="Token inválido o expirado",
         )
 
     # Validate new password
     if not request.new_password or not request.new_password.strip():
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="La contraseña no puede estar vacía"
+            error_code="auth.password_empty",
+            message="La contraseña no puede estar vacía",
         )
 
     if len(request.new_password) < 6:
-        raise HTTPException(
+        raise_api_error(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="La contraseña debe tener al menos 6 caracteres"
+            error_code="auth.password_too_short",
+            message="La contraseña debe tener al menos 6 caracteres",
         )
 
     # Hash new password

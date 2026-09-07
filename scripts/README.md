@@ -31,6 +31,22 @@ python scripts/verify_password_reset.py
 - Valida la generación de tokens
 - Comprueba el restablecimiento de contraseña
 
+### normalize_notification_language.py
+Script idempotente y **opcional** que materializa `notification_language="es"`
+en las empresas creadas antes de la funcionalidad multi-idioma. No es
+necesario ejecutarlo para que el sistema funcione (el default del modelo cubre
+los documentos antiguos); solo normaliza los documentos en base de datos.
+
+**Uso:**
+```bash
+python scripts/normalize_notification_language.py [--dry-run]
+```
+
+**Funcionalidad:**
+- Busca empresas sin `notification_language` (o con un valor no soportado)
+- Escribe el valor por defecto `es` (nunca sobreescribe valores válidos)
+- Con `--dry-run` solo informa, sin escribir
+
 ## ⚙️ Configuración
 
 Estos scripts requieren que la API esté corriendo:
