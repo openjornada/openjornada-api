@@ -8,6 +8,7 @@ populated ``company_names`` / ``work_center_names`` on the
 """
 from datetime import datetime, timezone as dt_timezone
 from typing import Dict
+from unittest.mock import patch
 
 import pytest
 from bson import ObjectId
@@ -513,3 +514,150 @@ class TestBulkWorkCenter:
             assert resp.json()["detail"]["error_code"] == "auth.insufficient_permissions"
         finally:
             await test_db.APIUsers.delete_one({"email": "tracker@test.com"})
+
+
+class TestUpdateWorkerCompanyRemoval:
+
+    @pytest.mark.asyncio
+    async def test_update_worker_removing_company_survives_stale_read_of_retained_assignment(
+        self, async_client: AsyncClient, admin_headers: Dict[str, str], test_db
+    ):
+        """Regression for the read-modify-write clobber in update_worker.
+
+        Simulates a concurrent assign_worker_work_center for a retained
+        company landing after this request's read: the first DB read returns
+        a stale worker whose work_center_assignments still contains both A
+        and B, while the real document already carries A's new assignment. A
+        whole-map ``$set`` would wipe A's concurrent assignment; the targeted
+        per-company ``$unset`` must not.
+        """
+        from api.database import db as app_db
+        import api.routers.workers as workers_module
+
+        company_a = None
+        company_b = None
+        worker_id = None
+        try:
+            company_a = await _create_company(async_client, admin_headers, "Update WC Stale A")
+            company_b = await _create_company(async_client, admin_headers, "Update WC Stale B")
+            worker_id = await _create_worker(
+                async_client, admin_headers, "update.wc.stale@test.com", "30303040A",
+                [company_a, company_b],
+            )
+            center_a = await _create_center(async_client, admin_headers, "Update Stale Alfa", company_a)
+            center_a_old = await _create_center(
+                async_client, admin_headers, "Update Stale Alfa Old", company_a
+            )
+            center_b = await _create_center(async_client, admin_headers, "Update Stale Beta", company_b)
+
+            # Concurrent write: company A's assignment lands on the real doc
+            # after this request's read (company B's was seeded beforehand).
+            await test_db.Workers.update_one(
+                {"_id": ObjectId(worker_id)},
+                {"$set": {"work_center_assignments": {company_a: center_a, company_b: center_b}}},
+            )
+            stale_worker = await test_db.Workers.find_one({"_id": ObjectId(worker_id)})
+            # The stale read predates A's concurrent assignment: it still has
+            # both A and B, with A pointing at the older center.
+            stale_worker["work_center_assignments"] = {
+                company_a: center_a_old,
+                company_b: center_b,
+            }
+
+            real_find_one = app_db.Workers.find_one
+            calls = {"n": 0}
+
+            async def find_one_stale_first(*args, **kwargs):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    return stale_worker
+                return await real_find_one(*args, **kwargs)
+
+            # Motor collections ignore instance attribute assignment, so patch
+            # the router's module-level `db` with a thin proxy that only
+            # intercepts Workers.find_one (auth/companies/centers stay real).
+            class _WorkersProxy:
+                def __init__(self, real_collection, find_one):
+                    self._real = real_collection
+                    self._find_one = find_one
+
+                def __getattr__(self, name):
+                    if name == "find_one":
+                        return self._find_one
+                    return getattr(self._real, name)
+
+            class _DbProxy:
+                def __init__(self, real_db, workers_find_one):
+                    self._real = real_db
+                    self._workers_find_one = workers_find_one
+
+                def __getattr__(self, name):
+                    if name == "Workers":
+                        return _WorkersProxy(self._real.Workers, self._workers_find_one)
+                    return getattr(self._real, name)
+
+            with patch.object(workers_module, "db", _DbProxy(app_db, find_one_stale_first)):
+                resp = await async_client.put(
+                    f"/api/workers/{worker_id}",
+                    json={"company_ids": [company_a]},
+                    headers=admin_headers,
+                )
+            assert resp.status_code == 200, resp.text
+            assert resp.json()["work_center_assignments"] == {company_a: center_a}
+
+            stored = await test_db.Workers.find_one({"_id": ObjectId(worker_id)})
+            assert stored["work_center_assignments"] == {company_a: center_a}
+        finally:
+            if worker_id:
+                await test_db.Workers.delete_one({"_id": ObjectId(worker_id)})
+            if company_a:
+                await test_db.WorkCenters.delete_many({"company_id": company_a})
+                await test_db.Companies.delete_one({"_id": ObjectId(company_a)})
+            if company_b:
+                await test_db.WorkCenters.delete_many({"company_id": company_b})
+                await test_db.Companies.delete_one({"_id": ObjectId(company_b)})
+            await test_db.APIUsers.delete_one({"email": "admin@test.com"})
+
+    @pytest.mark.asyncio
+    async def test_update_worker_removing_company_prunes_only_that_assignment(
+        self, async_client: AsyncClient, admin_headers: Dict[str, str], test_db
+    ):
+        """Removing one company prunes only that company's assignment key."""
+        company_a = None
+        company_b = None
+        worker_id = None
+        try:
+            company_a = await _create_company(async_client, admin_headers, "Update WC Prune A")
+            company_b = await _create_company(async_client, admin_headers, "Update WC Prune B")
+            worker_id = await _create_worker(
+                async_client, admin_headers, "update.wc.prune@test.com", "30303041A",
+                [company_a, company_b],
+            )
+            center_a = await _create_center(async_client, admin_headers, "Update Prune Alfa", company_a)
+            center_b = await _create_center(async_client, admin_headers, "Update Prune Beta", company_b)
+
+            await test_db.Workers.update_one(
+                {"_id": ObjectId(worker_id)},
+                {"$set": {"work_center_assignments": {company_a: center_a, company_b: center_b}}},
+            )
+
+            resp = await async_client.put(
+                f"/api/workers/{worker_id}",
+                json={"company_ids": [company_a]},
+                headers=admin_headers,
+            )
+            assert resp.status_code == 200, resp.text
+            assert resp.json()["work_center_assignments"] == {company_a: center_a}
+
+            stored = await test_db.Workers.find_one({"_id": ObjectId(worker_id)})
+            assert stored["work_center_assignments"] == {company_a: center_a}
+        finally:
+            if worker_id:
+                await test_db.Workers.delete_one({"_id": ObjectId(worker_id)})
+            if company_a:
+                await test_db.WorkCenters.delete_many({"company_id": company_a})
+                await test_db.Companies.delete_one({"_id": ObjectId(company_a)})
+            if company_b:
+                await test_db.WorkCenters.delete_many({"company_id": company_b})
+                await test_db.Companies.delete_one({"_id": ObjectId(company_b)})
+            await test_db.APIUsers.delete_one({"email": "admin@test.com"})

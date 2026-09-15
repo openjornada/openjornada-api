@@ -324,6 +324,7 @@ Backup records:
 - `POST /api/workers/` - Create worker
 - `PUT /api/workers/{id}` - Update worker
 - `PUT /api/workers/{id}/work-center` - Assign/clear the worker's center for a company
+- `POST /api/workers/bulk-work-center` - Assign/clear the center for several workers at once (`clear` can be scoped to a company)
 - `DELETE /api/workers/{id}` - Delete worker
 
 ### Workers (Public)

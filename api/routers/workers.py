@@ -383,6 +383,7 @@ async def update_worker(
 
     # Prepare update data
     update_data = worker_update.model_dump(exclude_unset=True)
+    unsets = {}
 
     # If company_ids is being updated, validate
     if "company_ids" in update_data:
@@ -417,13 +418,15 @@ async def update_worker(
                     message=f"ID de empresa inválido: {company_id}",
                 )
 
-        # Remove work center assignments for companies no longer associated
+        # Remove work center assignments for companies no longer associated.
+        # Targeted $unset per removed company (dot notation) instead of
+        # rewriting the whole work_center_assignments map: a concurrent
+        # assign_worker_work_center for a retained company landing between the
+        # read above and this write can no longer be clobbered by a stale
+        # snapshot. $unset on a missing key is a harmless no-op.
         current_assignments = dict(worker.get("work_center_assignments", {}))
         removed_companies = set(current_assignments.keys()) - set(company_ids)
-        if removed_companies:
-            for company_id in removed_companies:
-                current_assignments.pop(company_id, None)
-            update_data["work_center_assignments"] = current_assignments
+        unsets = {f"work_center_assignments.{cid}": "" for cid in removed_companies}
 
     # If email is being updated, check if it's already taken
     if "email" in update_data and update_data["email"] != worker["email"]:
@@ -461,9 +464,12 @@ async def update_worker(
     update_data["updated_by"] = current_user.username
 
     # Update the worker
+    update_doc = {"$set": update_data}
+    if unsets:
+        update_doc["$unset"] = unsets
     await db.Workers.update_one(
         {"_id": ObjectId(worker_id)},
-        {"$set": update_data}
+        update_doc
     )
 
     updated_worker = await db.Workers.find_one({"_id": ObjectId(worker_id)})
