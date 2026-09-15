@@ -568,6 +568,46 @@ class TestProcessDayRecords:
         assert result.records_count == 0
         assert result.has_open_session is False
 
+    def test_work_center_name_single_center(self):
+        """A day spent in a single center keeps just that center's name."""
+        records = [
+            {"type": "entry", "timestamp": _make_utc(2026, 1, 15, 8, 0), "work_center_name": "Central"},
+            {"type": "exit", "timestamp": _make_utc(2026, 1, 15, 16, 0), "duration_minutes": 480.0},
+        ]
+        result = self._call(records)
+        assert result.work_center_name == "Central"
+
+    def test_work_center_name_concatenates_distinct_centers(self):
+        """A mid-day center change attributes the day to both centers, in order."""
+        records = [
+            {"type": "entry", "timestamp": _make_utc(2026, 1, 15, 8, 0), "work_center_name": "A"},
+            {"type": "exit", "timestamp": _make_utc(2026, 1, 15, 12, 0), "duration_minutes": 240.0},
+            {"type": "entry", "timestamp": _make_utc(2026, 1, 15, 13, 0), "work_center_name": "B"},
+            {"type": "exit", "timestamp": _make_utc(2026, 1, 15, 17, 0), "duration_minutes": 240.0},
+        ]
+        result = self._call(records)
+        assert result.work_center_name == "A / B"
+
+    def test_work_center_name_deduplicates_repeated_centers(self):
+        """Repeated snapshots of the same center collapse to a single name."""
+        records = [
+            {"type": "entry", "timestamp": _make_utc(2026, 1, 15, 8, 0), "work_center_name": "A"},
+            {"type": "exit", "timestamp": _make_utc(2026, 1, 15, 12, 0), "duration_minutes": 240.0, "work_center_name": "A"},
+            {"type": "entry", "timestamp": _make_utc(2026, 1, 15, 13, 0), "work_center_name": "B"},
+            {"type": "exit", "timestamp": _make_utc(2026, 1, 15, 17, 0), "duration_minutes": 240.0, "work_center_name": "B"},
+        ]
+        result = self._call(records)
+        assert result.work_center_name == "A / B"
+
+    def test_work_center_name_none_when_records_have_no_snapshot(self):
+        """Records without a work_center_name leave the day's snapshot null."""
+        records = [
+            {"type": "entry", "timestamp": _make_utc(2026, 1, 15, 8, 0)},
+            {"type": "exit", "timestamp": _make_utc(2026, 1, 15, 16, 0), "duration_minutes": 480.0},
+        ]
+        result = self._call(records)
+        assert result.work_center_name is None
+
     def test_exit_without_duration_is_ignored(self):
         """An exit record without duration_minutes does not add worked time."""
         records = [
@@ -698,6 +738,32 @@ class TestExportService:
         assert "Horas Trabajadas" in header
 
     @pytest.mark.asyncio
+    async def test_export_csv_includes_work_center_column(self):
+        """CSV header includes 'Centro de trabajo' and rows carry the snapshot."""
+        svc = ExportService()
+        daily = _make_daily_summary()
+        daily.work_center_name = "Central"
+        summary = _make_worker_summary(daily_details=[daily])
+        buf = await svc.export_monthly_csv(summary)
+        text = buf.read().decode("utf-8-sig")
+        lines = [line for line in text.splitlines() if line.strip()]
+        assert "Centro de trabajo" in lines[0]
+        assert "Central" in lines[1]
+
+    @pytest.mark.asyncio
+    async def test_export_csv_work_center_empty_when_null(self):
+        """CSV row shows an empty cell when the snapshot is null."""
+        svc = ExportService()
+        daily = _make_daily_summary()
+        daily.work_center_name = None
+        summary = _make_worker_summary(daily_details=[daily])
+        buf = await svc.export_monthly_csv(summary)
+        text = buf.read().decode("utf-8-sig")
+        data_row = [line for line in text.splitlines() if line.strip()][1]
+        # "Empresa;Centro de trabajo;Entrada" -> empty center cell
+        assert "Empresa Test SL;;" in data_row
+
+    @pytest.mark.asyncio
     async def test_export_csv_data_row_present(self):
         """CSV contains at least one data row for a summary with daily_details."""
         svc = ExportService()
@@ -749,6 +815,42 @@ class TestExportService:
         result = await svc.export_monthly_xlsx(summary)
         assert isinstance(result, io.BytesIO)
         assert result.read() != b""
+
+    @pytest.mark.asyncio
+    async def test_export_xlsx_detail_sheet_includes_work_center_column(self):
+        """XLSX 'Detalle Diario' sheet has the 'Centro de trabajo' header and row value."""
+        from openpyxl import load_workbook
+        svc = ExportService()
+        daily = _make_daily_summary()
+        daily.work_center_name = "Central"
+        summary = _make_worker_summary(daily_details=[daily])
+        buf = await svc.export_monthly_xlsx(summary)
+        wb = load_workbook(buf)
+        ws = wb["Detalle Diario"]
+
+        headers = [cell.value for cell in ws[1]]
+        assert "Centro de trabajo" in headers
+        # Positioned right after "Empresa", mirroring the CSV layout.
+        assert headers[headers.index("Empresa") + 1] == "Centro de trabajo"
+
+        row_values = [cell.value for cell in ws[2]]
+        assert "Central" in row_values
+
+    @pytest.mark.asyncio
+    async def test_export_xlsx_detail_sheet_work_center_empty_when_null(self):
+        """XLSX 'Detalle Diario' row shows an empty cell when the snapshot is null."""
+        from openpyxl import load_workbook
+        svc = ExportService()
+        daily = _make_daily_summary()
+        daily.work_center_name = None
+        summary = _make_worker_summary(daily_details=[daily])
+        buf = await svc.export_monthly_xlsx(summary)
+        wb = load_workbook(buf)
+        ws = wb["Detalle Diario"]
+
+        headers = [cell.value for cell in ws[1]]
+        center_col = headers.index("Centro de trabajo")
+        assert ws.cell(row=2, column=center_col + 1).value in (None, "")
 
     @pytest.mark.asyncio
     async def test_export_pdf_returns_bytes(self):
@@ -830,6 +932,24 @@ class TestReportPermissions:
     def test_admin_has_manage_inspection(self):
         """Admin role includes manage_inspection permission."""
         assert "manage_inspection" in ROLE_PERMISSIONS["admin"]
+
+    def test_admin_has_work_center_permissions(self):
+        """Admin role includes all work-center permissions."""
+        for perm in ("view_work_centers", "create_work_centers", "update_work_centers", "delete_work_centers"):
+            assert perm in ROLE_PERMISSIONS["admin"]
+
+    def test_inspector_has_view_work_centers(self):
+        """Inspector role includes view_work_centers permission."""
+        assert "view_work_centers" in ROLE_PERMISSIONS["inspector"]
+
+    def test_inspector_no_create_work_centers(self):
+        """Inspector role does NOT include create_work_centers."""
+        assert "create_work_centers" not in ROLE_PERMISSIONS["inspector"]
+
+    def test_tracker_no_work_center_permissions(self):
+        """Tracker role has no work-center permissions."""
+        for perm in ("view_work_centers", "create_work_centers", "update_work_centers", "delete_work_centers"):
+            assert perm not in ROLE_PERMISSIONS["tracker"]
 
     def test_admin_has_permission_view_reports(self):
         """has_permission returns True for admin + view_reports."""

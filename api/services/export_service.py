@@ -89,7 +89,7 @@ class ExportService:
         text_buffer.write("\ufeff")
 
         header = [
-            "Fecha", "DNI", "Nombre", "Empresa",
+            "Fecha", "DNI", "Nombre", "Empresa", "Centro de trabajo",
             "Entrada", "Salida", "Horas Trabajadas",
             "Pausas (min)", "Horas Extra", "Modificado",
             "Registros Modificados", "Detalle Modificaciones",
@@ -317,6 +317,7 @@ class ExportService:
             day.worker_id_number,
             day.worker_name,
             day.company_name,
+            day.work_center_name or "",
             entry_str,
             exit_str,
             f"{worked_hours:.2f}",
@@ -372,7 +373,7 @@ class ExportService:
         ws = wb.create_sheet("Detalle Diario")
 
         headers = [
-            "Fecha", "DNI", "Nombre", "Empresa",
+            "Fecha", "DNI", "Nombre", "Empresa", "Centro de trabajo",
             "Entrada", "Salida", "Horas trabajadas",
             "Pausas (min)", "Descansos (min)", "Modificado",
             "Ausencia", "Tipo Ausencia",
@@ -394,6 +395,7 @@ class ExportService:
                 day.worker_id_number,
                 day.worker_name,
                 day.company_name,
+                day.work_center_name or "",
                 entry_str,
                 exit_str,
                 round(day.total_worked_minutes / 60, 2),
@@ -477,9 +479,9 @@ class ExportService:
     def _build_pdf_detail_table(self, summary: SummaryType, tz: pytz.BaseTzInfo) -> Table:
         """Build the daily detail table for either a worker or company report."""
         if isinstance(summary, CompanyMonthlySummary):
-            header = ["Fecha", "DNI", "Nombre", "Entrada", "Salida", "Horas", "Pausas", "Estado"]
+            header = ["Fecha", "DNI", "Nombre", "Centro", "Entrada", "Salida", "Horas", "Pausas", "Estado"]
         else:
-            header = ["Fecha", "Entrada", "Salida", "Horas", "Pausas (min)", "Descansos (min)", "Estado"]
+            header = ["Fecha", "Centro", "Entrada", "Salida", "Horas", "Pausas (min)", "Descansos (min)", "Estado"]
 
         data = [header]
 
@@ -506,6 +508,7 @@ class ExportService:
                     day.date.strftime("%d/%m/%Y"),
                     day.worker_id_number,
                     day.worker_name,
+                    day.work_center_name or "—",
                     entry_str,
                     exit_str,
                     f"{day.total_worked_minutes / 60:.2f}",
@@ -515,6 +518,7 @@ class ExportService:
             else:
                 data.append([
                     day.date.strftime("%d/%m/%Y"),
+                    day.work_center_name or "—",
                     entry_str,
                     exit_str,
                     f"{day.total_worked_minutes / 60:.2f}",
@@ -524,9 +528,9 @@ class ExportService:
                 ])
 
         if isinstance(summary, CompanyMonthlySummary):
-            col_widths = [2.8 * cm, 2.8 * cm, 5 * cm, 2.2 * cm, 2.2 * cm, 2.2 * cm, 2.2 * cm, 2 * cm]
+            col_widths = [2.8 * cm, 2.8 * cm, 5 * cm, 3 * cm, 2.2 * cm, 2.2 * cm, 2.2 * cm, 2.2 * cm, 2 * cm]
         else:
-            col_widths = [3 * cm, 2.5 * cm, 2.5 * cm, 2.5 * cm, 3 * cm, 3.5 * cm, 2.5 * cm]
+            col_widths = [3 * cm, 3 * cm, 2.5 * cm, 2.5 * cm, 2.5 * cm, 3 * cm, 3.5 * cm, 2.5 * cm]
 
         table = Table(data, colWidths=col_widths, repeatRows=1)
         table.setStyle(self._pdf_table_style())

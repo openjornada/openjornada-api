@@ -24,6 +24,10 @@ ROLE_PERMISSIONS = {
         "view_companies",
         "update_companies",
         "delete_companies",
+        "create_work_centers",
+        "view_work_centers",
+        "update_work_centers",
+        "delete_work_centers",
         "view_incidents",
         "manage_incidents",
         "view_settings",
@@ -45,6 +49,7 @@ ROLE_PERMISSIONS = {
         "view_reports",
         "export_reports",
         "view_companies",
+        "view_work_centers",
     ],
     "tracker": [
         "create_time_records",

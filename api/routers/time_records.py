@@ -100,6 +100,24 @@ async def create_time_record(
             detail="No tienes permisos para registrar tiempo en esta empresa"
         )
 
+    # 5b. Resolve work center snapshot for this company (if assigned)
+    # The snapshot intentionally ignores the center's current deleted status:
+    # the historical center name must be preserved even if the center was
+    # soft-deleted after the assignment (residual race window of auto-unassign).
+    work_center_id = worker.get("work_center_assignments", {}).get(credentials.company_id)
+    work_center_name = None
+    if work_center_id:
+        try:
+            work_center = await db.WorkCenters.find_one({
+                "_id": ObjectId(work_center_id)
+            })
+        except Exception:
+            work_center = None
+        if work_center:
+            work_center_name = work_center["name"]
+        else:
+            work_center_id = None
+
     # 6. Get current time in UTC. Captured BEFORE the CAS so the state doc and
     #    the TimeRecord share the same instant.
     current_time_utc = datetime.now(dt_timezone.utc)
@@ -151,6 +169,8 @@ async def create_time_record(
                 recorded_by=current_user.username,
                 company_id=credentials.company_id,
                 company_name=company_name,
+                work_center_id=work_center_id,
+                work_center_name=work_center_name,
             )
 
         elif action == "pause_start":
@@ -162,6 +182,8 @@ async def create_time_record(
                 recorded_by=current_user.username,
                 company_id=credentials.company_id,
                 company_name=company_name,
+                work_center_id=work_center_id,
+                work_center_name=work_center_name,
                 pause_type_id=pause_info["pause_type_id"],
                 pause_type_name=pause_info["pause_type_name"],
                 pause_counts_as_work=pause_info["pause_counts_as_work"],
@@ -186,6 +208,8 @@ async def create_time_record(
                 recorded_by=current_user.username,
                 company_id=credentials.company_id,
                 company_name=company_name,
+                work_center_id=work_center_id,
+                work_center_name=work_center_name,
                 pause_type_id=op["pause_type_id"],
                 pause_type_name=op["pause_type_name"],
                 pause_counts_as_work=op["pause_counts_as_work"],
@@ -223,6 +247,8 @@ async def create_time_record(
                 recorded_by=current_user.username,
                 company_id=credentials.company_id,
                 company_name=company_name,
+                work_center_id=work_center_id,
+                work_center_name=work_center_name,
                 duration_minutes=duration_minutes,
             )
 
@@ -271,6 +297,10 @@ async def create_time_record(
             "company_id": credentials.company_id,
             "company_name": company_name,
             "duration_minutes": response.duration_minutes,
+            # Snapshot del centro resuelto en el fichaje; el admin lo muestra en
+            # tiempo real sin necesidad de recargar (contrato del frontend).
+            "work_center_id": response.work_center_id,
+            "work_center_name": response.work_center_name,
         },
     )
     return response
@@ -316,6 +346,7 @@ async def get_all_time_records(
     start_date: Optional[date] = Query(None, description="Start date filter (YYYY-MM-DD)"),
     end_date: Optional[date] = Query(None, description="End date filter (YYYY-MM-DD)"),
     company_id: Optional[str] = Query(None, description="Filter by company ID"),
+    work_center_id: Optional[str] = Query(None, description="Filter by work center ID"),
     worker_name: Optional[str] = Query(None, description="Filter by worker name (case-insensitive partial match)"),
     timezone: Optional[str] = Query("UTC", description="Timezone for displaying records"),
     current_user: APIUser = Depends(PermissionChecker("view_all_time_records"))
@@ -326,6 +357,10 @@ async def get_all_time_records(
     # Company filtering
     if company_id:
         query["company_id"] = company_id
+
+    # Work center filtering
+    if work_center_id:
+        query["work_center_id"] = work_center_id
 
     # Worker name filtering (case-insensitive partial match)
     if worker_name:
