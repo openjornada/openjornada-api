@@ -142,6 +142,62 @@ class TestRealtimeNotifications:
             await test_db.APIUsers.delete_one({"email": "admin@test.com"})
 
     @pytest.mark.asyncio
+    async def test_fichaje_event_payload_includes_work_center_snapshot(
+        self, async_client: AsyncClient, admin_headers: Dict[str, str], test_db
+    ):
+        """El evento realtime 'fichaje.created' lleva el snapshot del centro para
+        que el listado del admin lo muestre en vivo (sin recargar)."""
+        company_id = worker_id = center_id = None
+        sub = None
+        try:
+            company_id, email, worker_id = await _create_company_and_worker(
+                async_client, admin_headers, test_db, "wc"
+            )
+
+            resp = await async_client.post(
+                "/api/work-centers/",
+                json={"name": "Planta Sur", "company_id": company_id},
+                headers=admin_headers,
+            )
+            assert resp.status_code == 201, resp.text
+            center_id = resp.json()["id"]
+
+            resp = await async_client.put(
+                f"/api/workers/{worker_id}/work-center",
+                json={"company_id": company_id, "work_center_id": center_id},
+                headers=admin_headers,
+            )
+            assert resp.status_code == 200, resp.text
+
+            sub = event_bus.subscribe(company_id)
+            resp = await _fichaje(async_client, admin_headers, company_id, email)
+            assert resp.status_code == 201, resp.text
+
+            event = await asyncio.wait_for(sub.queue.get(), timeout=2)
+            assert event.type == "fichaje.created"
+            assert event.payload["work_center_id"] == center_id
+            assert event.payload["work_center_name"] == "Planta Sur"
+
+            # El payload de la notificación persistida también lo lleva.
+            doc = await test_db.notifications.find_one({"company_id": company_id})
+            assert doc is not None
+            assert doc["payload"]["work_center_id"] == center_id
+            assert doc["payload"]["work_center_name"] == "Planta Sur"
+        finally:
+            if sub is not None:
+                event_bus.unsubscribe(sub)
+            await test_db.notifications.delete_many({"company_id": company_id})
+            if worker_id:
+                await test_db.WorkerShiftStates.delete_many({"worker_id": worker_id})
+                await test_db.TimeRecords.delete_many({"worker_id": worker_id})
+                await test_db.Workers.delete_one({"_id": ObjectId(worker_id)})
+            if center_id:
+                await test_db.WorkCenters.delete_one({"_id": ObjectId(center_id)})
+            if company_id:
+                await test_db.Companies.delete_one({"_id": ObjectId(company_id)})
+            await test_db.APIUsers.delete_one({"email": "admin@test.com"})
+
+    @pytest.mark.asyncio
     async def test_fichaje_succeeds_without_subscribers(
         self, async_client: AsyncClient, admin_headers: Dict[str, str], test_db
     ):

@@ -12,6 +12,10 @@ class TimeRecordModel(BaseModel):
     company_id: str  # ID de la empresa
     company_name: str  # Nombre de la empresa
 
+    # Snapshot del centro de trabajo asignado en la empresa del registro
+    work_center_id: Optional[str] = None
+    work_center_name: Optional[str] = None
+
     # Campos para pausas
     pause_type_id: Optional[str] = None
     pause_type_name: Optional[str] = None
@@ -58,6 +62,10 @@ class TimeRecordResponse(BaseModel):
     recorded_by: str
     company_id: Optional[str] = None  # Optional for backward compatibility
     company_name: Optional[str] = None  # Optional for backward compatibility
+
+    # Snapshot del centro de trabajo en el momento del fichaje
+    work_center_id: Optional[str] = None
+    work_center_name: Optional[str] = None
 
     # Campos para pausas
     pause_type_id: Optional[str] = None

@@ -15,6 +15,7 @@ Backend API for the OpenJornada system, built with FastAPI and MongoDB.
 - **Pydantic Validation**: Robust data validation
 - **Automatic Timezone**: Correct timezone handling in records
 - **Company System**: Multi-company support with associated workers
+- **Work Centers**: Optional subdivision of each company (`/api/work-centers`, granular `*_work_centers` permissions); worker assignment to a center **per company** (`PUT /api/workers/{id}/work-center` and bulk `POST /api/workers/bulk-work-center`); every time record stores the historical center snapshot and the monthly report/export includes a "Work center" column
 - **Email Sending**: Password recovery via SMTP
 - **Incident Management**: Complete reporting and tracking system
 - **Backup System**: Automatic backups with multiple backends (S3, SFTP, Local)
@@ -194,7 +195,7 @@ openjornada-api/
 ### Available Roles
 
 - **admin**: Full access to all endpoints
-- **inspector**: Read-only access to reports and companies (Labor Inspection)
+- **inspector**: Read-only access to reports, companies and work centers (Labor Inspection)
 - **tracker**: Can only create time records
 
 ### Permissions by Role
@@ -206,6 +207,7 @@ openjornada-api/
 - manage_pause_types, view_pause_types
 - view_change_requests, manage_change_requests, create_change_requests
 - create_companies, view_companies, update_companies, delete_companies
+- create_work_centers, view_work_centers, update_work_centers, delete_work_centers
 - view_incidents, manage_incidents
 - view_settings, update_settings
 - view_backups, manage_backups
@@ -213,7 +215,7 @@ openjornada-api/
 - manage_sms_config, view_sms_logs, view_sms_dashboard
 
 **Inspector**:
-- view_reports, export_reports, view_companies
+- view_reports, export_reports, view_companies, view_work_centers
 
 **Tracker**:
 - create_time_records, create_change_requests, view_pause_types
@@ -224,6 +226,7 @@ openjornada-api/
 Workers who register their work hours:
 - Fields: first_name, last_name, email, phone_number, id_number, hashed_password
 - company_ids: Array of associated company IDs
+- work_center_assignments: Map `company_id → work_center_id` (center assigned per company, optional)
 - Soft delete: deleted_at, deleted_by
 
 ### TimeRecords
@@ -231,11 +234,17 @@ Clock-in/clock-out records:
 - Automatic type based on last record
 - Stores UTC + local time with timezone
 - Fields: worker_id, company_id, company_name, type, timestamp
+- work_center_id / work_center_name: snapshot of the center assigned at clock-in time (optional)
 - Automatically calculates duration
 
 ### Companies
 System companies:
 - Fields: name, created_at, updated_at
+- Soft delete: deleted_at, deleted_by
+
+### WorkCenters
+Work centers (subdivision of a company):
+- Fields: name, code, address, company_id
 - Soft delete: deleted_at, deleted_by
 
 ### APIUsers
@@ -303,10 +312,19 @@ Backup records:
 - `PATCH /api/companies/{id}` - Update company
 - `DELETE /api/companies/{id}` - Delete company
 
+### Work Centers (Admin)
+- `GET /api/work-centers/` - List centers (optional `company_id` filter; includes `company_name`)
+- `POST /api/work-centers/` - Create center
+- `GET /api/work-centers/{id}` - Get center
+- `PUT /api/work-centers/{id}` - Update center (`name`/`code`/`address`; `company_id` immutable)
+- `DELETE /api/work-centers/{id}` - Delete center (soft delete + automatic unassignment)
+
 ### Workers (Admin)
-- `GET /api/workers/` - List workers
+- `GET /api/workers/` - List workers (optional `work_center_id` filter; includes `work_center_assignments`/`work_center_names`)
 - `POST /api/workers/` - Create worker
 - `PUT /api/workers/{id}` - Update worker
+- `PUT /api/workers/{id}/work-center` - Assign/clear the worker's center for a company
+- `POST /api/workers/bulk-work-center` - Assign/clear the center for several workers at once (`clear` can be scoped to a company)
 - `DELETE /api/workers/{id}` - Delete worker
 
 ### Workers (Public)

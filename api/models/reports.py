@@ -34,6 +34,10 @@ class DailyWorkSummary(BaseModel):
     company_id: str
     company_name: str
 
+    # Centro(s) de trabajo del día: valores distintos en orden cronológico,
+    # unidos con " / " si el trabajador cambió de centro durante la jornada.
+    work_center_name: Optional[str] = None
+
     first_entry: Optional[AwareDatetime] = None
     last_exit: Optional[AwareDatetime] = None
 

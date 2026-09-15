@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr, Field
-from typing import Optional, List, Literal
+from typing import Optional, List, Literal, Dict
 from datetime import datetime
 
 from .i18n import SupportedLocale
@@ -43,6 +43,8 @@ class WorkerResponse(BaseModel):
     deleted_by: Optional[str] = None
     company_ids: List[str] = Field(default_factory=list, description="Lista de IDs de empresas asociadas")
     company_names: List[str] = Field(default_factory=list, description="Nombres de las empresas asociadas")
+    work_center_assignments: Dict[str, str] = Field(default_factory=dict, description="Asignaciones de centro por empresa (company_id -> work_center_id)")
+    work_center_names: Dict[str, str] = Field(default_factory=dict, description="Nombres de centros por empresa (company_id -> nombre del centro)")
     sms_config: Optional[SmsWorkerConfig] = None
     language: Optional[SupportedLocale] = None
     # No incluimos la contraseña en la respuesta
@@ -79,6 +81,7 @@ class WorkerInDB(BaseModel):
     deleted_at: Optional[datetime] = None
     deleted_by: Optional[str] = None
     company_ids: List[str] = Field(default_factory=list)
+    work_center_assignments: Dict[str, str] = Field(default_factory=dict)
     language: Optional[SupportedLocale] = None
     # Password reset fields
     reset_token: Optional[str] = None
@@ -90,6 +93,15 @@ class WorkerCompaniesRequest(BaseModel):
     """Request model for getting worker's companies"""
     email: EmailStr
     password: str
+
+
+class WorkerWorkCenterAssignment(BaseModel):
+    """Request body for assigning a worker to a work center in one company.
+
+    ``work_center_id=None`` clears the assignment for that company.
+    """
+    company_id: str
+    work_center_id: Optional[str] = None
 
 
 class WorkerMeRequest(BaseModel):
@@ -192,3 +204,36 @@ class WorkerBulkImportResponse(BaseModel):
     skipped: int
     errors: int
     results: List[WorkerImportRowResult]
+
+
+class WorkerBulkWorkCenterRequest(BaseModel):
+    """Request body for POST /workers/bulk-work-center.
+
+    ``action="assign"`` sets ``work_center_assignments[company_id]`` to
+    ``work_center_id`` for every listed worker that belongs to ``company_id``;
+    ``action="clear"`` wipes the work-center assignment of every listed
+    worker for ``company_id`` if provided, or ALL of its work-center
+    assignments if ``company_id`` is omitted (``work_center_id`` is always
+    ignored for ``clear``).
+    """
+
+    worker_ids: List[str] = Field(
+        ..., min_length=1, max_length=MAX_BULK_IMPORT_ROWS, description="IDs de trabajadores a procesar"
+    )
+    action: Literal["assign", "clear"]
+    company_id: Optional[str] = None
+    work_center_id: Optional[str] = None
+
+
+class WorkerBulkWorkCenterResponse(BaseModel):
+    """Summary of a bulk work-center assignment/clear.
+
+    ``skipped`` counts workers not applicable (for assign: not in the center's
+    company, or not found/deleted; for clear: not found/deleted), including
+    invalid worker ids.
+    """
+
+    total: int
+    updated: int
+    skipped: int
+    detail: Optional[str] = None

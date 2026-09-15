@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, status, Depends, Query
 from pydantic import TypeAdapter, EmailStr, ValidationError
 from typing import List, Optional
 from datetime import datetime, timedelta
@@ -25,6 +25,9 @@ from ..models.workers import (
     WorkerBulkImportResponse,
     WorkerImportRow,
     WorkerImportRowResult,
+    WorkerWorkCenterAssignment,
+    WorkerBulkWorkCenterRequest,
+    WorkerBulkWorkCenterResponse,
 )
 from ..models.auth import APIUser
 from ..models.i18n import (
@@ -128,6 +131,45 @@ def _resolve_company_ids(row: WorkerImportRow, company_cache: dict):
     return company_ids, None
 
 
+async def _resolve_work_center_names(worker: dict) -> dict:
+    """Resolve worker.work_center_assignments to {company_id: center_name}."""
+    work_center_names = {}
+    for company_id, work_center_id in worker.get("work_center_assignments", {}).items():
+        try:
+            work_center = await db.WorkCenters.find_one({"_id": ObjectId(work_center_id)})
+            if work_center:
+                work_center_names[company_id] = work_center["name"]
+        except Exception:
+            pass
+    return work_center_names
+
+
+async def _resolve_company_names(worker: dict) -> list:
+    """Resolve worker.company_ids to an index-aligned list of company names.
+
+    One entry per company_id in the same order: the company name when the
+    company exists (even if soft-deleted, so historical associations keep
+    their label) and "" when it is missing. Alignment matters because the
+    admin UI resolves names via company_names[company_ids.indexOf(id)].
+    """
+    company_names = []
+    for company_id in worker.get("company_ids", []):
+        try:
+            company = await db.Companies.find_one({"_id": ObjectId(company_id)})
+        except Exception:
+            company = None
+        company_names.append(company["name"] if company else "")
+    return company_names
+
+
+async def _get_worker_response(worker: dict) -> WorkerResponse:
+    """Build a fully-populated WorkerResponse for a single worker."""
+    worker_data = convert_id(worker)
+    worker_data["company_names"] = await _resolve_company_names(worker)
+    worker_data["work_center_names"] = await _resolve_work_center_names(worker)
+    return WorkerResponse(**worker_data)
+
+
 @router.post("/workers/", response_model=WorkerResponse, status_code=status.HTTP_201_CREATED)
 async def create_worker(
     worker: WorkerModel,
@@ -193,18 +235,9 @@ async def create_worker(
     if send_welcome_email:
         await _send_welcome_email_to_worker(created_worker)
 
-    # Get company names for response
-    company_names = []
-    for company_id in created_worker.get("company_ids", []):
-        try:
-            company = await db.Companies.find_one({"_id": ObjectId(company_id)})
-            if company:
-                company_names.append(company["name"])
-        except Exception:
-            pass
-
+    # Get company names for response (index-aligned with company_ids)
     response_data = convert_id(created_worker)
-    response_data["company_names"] = company_names
+    response_data["company_names"] = await _resolve_company_names(created_worker)
 
     return WorkerResponse(**response_data)
 
@@ -350,6 +383,7 @@ async def update_worker(
 
     # Prepare update data
     update_data = worker_update.model_dump(exclude_unset=True)
+    unsets = {}
 
     # If company_ids is being updated, validate
     if "company_ids" in update_data:
@@ -383,6 +417,16 @@ async def update_worker(
                     error_code="worker.invalid_company_id",
                     message=f"ID de empresa inválido: {company_id}",
                 )
+
+        # Remove work center assignments for companies no longer associated.
+        # Targeted $unset per removed company (dot notation) instead of
+        # rewriting the whole work_center_assignments map: a concurrent
+        # assign_worker_work_center for a retained company landing between the
+        # read above and this write can no longer be clobbered by a stale
+        # snapshot. $unset on a missing key is a harmless no-op.
+        current_assignments = dict(worker.get("work_center_assignments", {}))
+        removed_companies = set(current_assignments.keys()) - set(company_ids)
+        unsets = {f"work_center_assignments.{cid}": "" for cid in removed_companies}
 
     # If email is being updated, check if it's already taken
     if "email" in update_data and update_data["email"] != worker["email"]:
@@ -420,45 +464,281 @@ async def update_worker(
     update_data["updated_by"] = current_user.username
 
     # Update the worker
+    update_doc = {"$set": update_data}
+    if unsets:
+        update_doc["$unset"] = unsets
     await db.Workers.update_one(
         {"_id": ObjectId(worker_id)},
-        {"$set": update_data}
+        update_doc
     )
 
     updated_worker = await db.Workers.find_one({"_id": ObjectId(worker_id)})
 
-    # Get company names for response
-    company_names = []
-    for company_id in updated_worker.get("company_ids", []):
-        try:
-            company = await db.Companies.find_one({"_id": ObjectId(company_id)})
-            if company:
-                company_names.append(company["name"])
-        except Exception:
-            pass
-
+    # Get company names for response (index-aligned with company_ids)
     response_data = convert_id(updated_worker)
-    response_data["company_names"] = company_names
+    response_data["company_names"] = await _resolve_company_names(updated_worker)
+    response_data["work_center_names"] = await _resolve_work_center_names(updated_worker)
 
     return WorkerResponse(**response_data)
 
-@router.get("/workers/", response_model=List[WorkerResponse])
-async def get_workers(current_user: APIUser = Depends(PermissionChecker("view_workers"))):
-    workers = []
-    # Exclude deleted workers
-    async for worker in db.Workers.find({"deleted_at": None}):
-        # Get company names for each worker
-        company_names = []
-        for company_id in worker.get("company_ids", []):
-            try:
-                company = await db.Companies.find_one({"_id": ObjectId(company_id)})
-                if company:
-                    company_names.append(company["name"])
-            except Exception:
-                pass
+@router.put("/workers/{worker_id}/work-center", response_model=WorkerResponse)
+async def assign_worker_work_center(
+    worker_id: str,
+    assignment: WorkerWorkCenterAssignment,
+    current_user: APIUser = Depends(PermissionChecker("update_workers"))
+):
+    """
+    Assign a worker to a work center in one of their companies.
 
+    Validates that the company belongs to the worker and that the work center
+    exists, is not deleted and belongs to that company. A null work_center_id
+    clears the assignment for that company.
+    """
+    try:
+        worker = await db.Workers.find_one({"_id": ObjectId(worker_id), "deleted_at": None})
+    except Exception:
+        worker = None
+
+    if not worker:
+        raise_api_error(
+            status_code=status.HTTP_404_NOT_FOUND,
+            error_code="worker.not_found",
+            message="Worker not found",
+        )
+
+    worker_company_ids = [str(cid) for cid in worker.get("company_ids", [])]
+    if assignment.company_id not in worker_company_ids:
+        raise_api_error(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            error_code="worker.company_not_associated",
+            message="La empresa no está asociada al trabajador",
+        )
+
+    # Targeted $set/$unset on the single company key (dot notation) instead of
+    # rewriting the whole work_center_assignments map: two concurrent PUTs for
+    # different companies can no longer clobber each other's assignment.
+    # Dot notation is safe here because company_id is a MongoDB ObjectId hex
+    # string (no dots or "$").
+    assignment_key = f"work_center_assignments.{assignment.company_id}"
+
+    if assignment.work_center_id is None:
+        # $unset on a nonexistent key is a harmless no-op.
+        update_doc = {
+            "$unset": {assignment_key: ""},
+            "$set": {
+                "updated_at": datetime.utcnow(),
+                "updated_by": current_user.username,
+            },
+        }
+    else:
+        try:
+            work_center = await db.WorkCenters.find_one({
+                "_id": ObjectId(assignment.work_center_id),
+                "company_id": assignment.company_id,
+                "deleted_at": None
+            })
+        except Exception:
+            work_center = None
+
+        if not work_center:
+            raise_api_error(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                error_code="work_center.not_found",
+                message="El centro de trabajo no existe, está eliminado o no pertenece a esa empresa",
+            )
+        update_doc = {
+            "$set": {
+                assignment_key: assignment.work_center_id,
+                "updated_at": datetime.utcnow(),
+                "updated_by": current_user.username,
+            },
+        }
+
+    await db.Workers.update_one({"_id": ObjectId(worker_id)}, update_doc)
+
+    updated_worker = await db.Workers.find_one({"_id": ObjectId(worker_id)})
+
+    # Get company names for response (index-aligned with company_ids)
+    response_data = convert_id(updated_worker)
+    response_data["company_names"] = await _resolve_company_names(updated_worker)
+    response_data["work_center_names"] = await _resolve_work_center_names(updated_worker)
+
+    return WorkerResponse(**response_data)
+
+@router.post("/workers/bulk-work-center", response_model=WorkerBulkWorkCenterResponse)
+async def bulk_assign_work_center(
+    request: WorkerBulkWorkCenterRequest,
+    current_user: APIUser = Depends(PermissionChecker("update_workers"))
+):
+    """
+    Assign or clear work-center assignments for many workers at once.
+
+    ``assign`` validates the work center once and only touches workers that
+    belong to its company (the ``company_ids`` filter auto-skips the rest).
+    ``clear`` wipes the work-center assignment for ``company_id`` if
+    provided, or ALL work-center assignments of every listed worker if
+    ``company_id`` is omitted.
+    Invalid worker ids and non-applicable workers count toward ``skipped``.
+    """
+    unique_ids = list(dict.fromkeys(request.worker_ids))
+    total = len(unique_ids)
+
+    if request.action == "assign":
+        if not request.company_id or not request.work_center_id:
+            raise_api_error(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                error_code="work_center.no_update_data",
+                message="Debes indicar empresa y centro para asignar",
+            )
+        try:
+            work_center = await db.WorkCenters.find_one({
+                "_id": ObjectId(request.work_center_id),
+                "company_id": request.company_id,
+                "deleted_at": None,
+            })
+        except Exception:
+            work_center = None
+
+        if not work_center:
+            raise_api_error(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                error_code="work_center.not_found",
+                message="El centro de trabajo no existe, está eliminado o no pertenece a esa empresa",
+            )
+
+    oids = []
+    for worker_id in unique_ids:
+        try:
+            oids.append(ObjectId(worker_id))
+        except Exception:
+            continue
+
+    query = {"_id": {"$in": oids}, "deleted_at": None}
+    update_doc = {
+        "$set": {
+            "updated_at": datetime.utcnow(),
+            "updated_by": current_user.username,
+        }
+    }
+
+    if request.action == "assign":
+        # The company_ids filter is what auto-skips workers not in the
+        # center's company: they simply don't match the update.
+        query["company_ids"] = request.company_id
+        # Dot notation is safe here because company_id is a MongoDB ObjectId
+        # hex string (no dots or "$"), same as the single-worker endpoint.
+        update_doc["$set"][f"work_center_assignments.{request.company_id}"] = request.work_center_id
+    elif request.company_id is not None:
+        try:
+            ObjectId(request.company_id)
+        except Exception:
+            raise_api_error(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                error_code="worker.invalid_company_id",
+                message="ID de empresa inválido",
+            )
+        query["company_ids"] = request.company_id
+        # Dot notation is safe here because company_id is a MongoDB ObjectId
+        # hex string (no dots or "$"), same as the single-worker endpoint.
+        update_doc["$unset"] = {f"work_center_assignments.{request.company_id}": ""}
+    else:
+        update_doc["$set"]["work_center_assignments"] = {}
+
+    try:
+        result = await db.Workers.update_many(query, update_doc)
+    except Exception as e:
+        logger.error(f"Error in bulk work-center {request.action}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error al actualizar los centros de trabajo",
+        )
+
+    updated = result.matched_count
+    skipped = total - updated
+
+    detail = None
+    if request.action == "assign" and skipped > 0:
+        detail = "Trabajadores que no pertenecen a la empresa del centro omitidos"
+
+    return WorkerBulkWorkCenterResponse(
+        total=total,
+        updated=updated,
+        skipped=skipped,
+        detail=detail,
+    )
+
+@router.get("/workers/", response_model=List[WorkerResponse])
+async def get_workers(
+    work_center_id: Optional[str] = Query(None, description="Filter by work center ID"),
+    current_user: APIUser = Depends(PermissionChecker("view_workers"))
+):
+    query = {"deleted_at": None}
+    if work_center_id:
+        query["$expr"] = {
+            "$gt": [
+                {"$size": {"$ifNull": [
+                    {"$filter": {
+                        "input": {"$objectToArray": "$work_center_assignments"},
+                        "as": "entry",
+                        "cond": {"$eq": ["$$entry.v", work_center_id]},
+                    }},
+                    [],
+                ]}},
+                0,
+            ]
+        }
+
+    raw_workers = []
+    # Exclude deleted workers
+    async for worker in db.Workers.find(query):
+        raw_workers.append(worker)
+
+    # Batch-resolve every referenced company and work center in two queries
+    # instead of one Companies/WorkCenters lookup per worker/assignment.
+    def _valid_oids(ids):
+        oids = []
+        for raw_id in ids:
+            try:
+                oids.append(ObjectId(raw_id))
+            except Exception:
+                continue
+        return oids
+
+    company_ids = {
+        str(cid)
+        for worker in raw_workers
+        for cid in worker.get("company_ids", [])
+    }
+    company_map = {}
+    company_oids = _valid_oids(company_ids)
+    if company_oids:
+        async for company in db.Companies.find({"_id": {"$in": company_oids}}):
+            company_map[str(company["_id"])] = company
+
+    work_center_ids = {
+        str(wc_id)
+        for worker in raw_workers
+        for wc_id in worker.get("work_center_assignments", {}).values()
+    }
+    work_center_map = {}
+    work_center_oids = _valid_oids(work_center_ids)
+    if work_center_oids:
+        async for work_center in db.WorkCenters.find({"_id": {"$in": work_center_oids}}):
+            work_center_map[str(work_center["_id"])] = work_center
+
+    workers = []
+    for worker in raw_workers:
+        worker_company_ids = [str(cid) for cid in worker.get("company_ids", [])]
         worker_data = convert_id(worker)
-        worker_data["company_names"] = company_names
+        # Index-aligned with company_ids ("" for missing companies).
+        worker_data["company_names"] = [
+            company_map.get(cid, {}).get("name", "") for cid in worker_company_ids
+        ]
+        worker_data["work_center_names"] = {
+            company_id: work_center_map[work_center_id]["name"]
+            for company_id, work_center_id in worker.get("work_center_assignments", {}).items()
+            if work_center_id in work_center_map
+        }
         workers.append(WorkerResponse(**worker_data))
     return workers
 
@@ -479,20 +759,7 @@ async def get_worker(
             message="Worker not found",
         )
 
-    # Get company names
-    company_names = []
-    for company_id in worker.get("company_ids", []):
-        try:
-            company = await db.Companies.find_one({"_id": ObjectId(company_id)})
-            if company:
-                company_names.append(company["name"])
-        except Exception:
-            pass
-
-    worker_data = convert_id(worker)
-    worker_data["company_names"] = company_names
-
-    return WorkerResponse(**worker_data)
+    return await _get_worker_response(worker)
 
 @router.get("/workers/id_number/{id_number}", response_model=WorkerResponse)
 async def get_worker_by_id_number(
@@ -507,7 +774,7 @@ async def get_worker_by_id_number(
             message="Worker not found",
         )
 
-    return WorkerResponse(**convert_id(worker))
+    return await _get_worker_response(worker)
 
 @router.delete("/workers/{worker_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_worker(

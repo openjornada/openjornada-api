@@ -12,7 +12,7 @@ from slowapi.middleware import SlowAPIMiddleware
 
 from .database import init_db, init_default_settings
 from .routers import workers, time_records, auth, incidents, settings, companies, pause_types, change_requests, gdpr, backups, reports
-from .routers import sms, subscription, events, notifications, absences, absence_policies
+from .routers import sms, subscription, events, notifications, absences, absence_policies, work_centers
 from .services.scheduler_service import scheduler_service
 from .services.sms_service import sms_service
 from .utils.rate_limit import limiter
@@ -81,6 +81,7 @@ app.add_middleware(
 # Include routers
 app.include_router(auth.router, prefix="/api", tags=["Authentication"])
 app.include_router(companies.router, prefix="/api", tags=["Companies"])
+app.include_router(work_centers.router, prefix="/api", tags=["Work Centers"])
 app.include_router(workers.router, prefix="/api", tags=["Workers"])
 app.include_router(time_records.router, prefix="/api", tags=["Time Records"])
 app.include_router(pause_types.router, prefix="/api", tags=["Pause Types"])

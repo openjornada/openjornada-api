@@ -15,6 +15,7 @@ Backend API para el sistema OpenJornada, construido con FastAPI y MongoDB.
 - **Validación Pydantic**: Validación de datos robusta
 - **Zona Horaria Automática**: Manejo correcto de zonas horarias en registros
 - **Sistema de Empresas**: Soporte multi-empresa con trabajadores asociados
+- **Centros de Trabajo**: Subdivisión opcional de cada empresa (`/api/work-centers`, permisos granulares `*_work_centers`); asignación de trabajadores a un centro **por empresa** (`PUT /api/workers/{id}/work-center` y bulk `POST /api/workers/bulk-work-center`); cada fichaje guarda el snapshot histórico del centro y el informe/exportación mensual incluye la columna "Centro de trabajo"
 - **Envío de Emails**: Recuperación de contraseña vía SMTP
 - **Gestión de Incidencias**: Sistema completo de reportes y seguimiento
 - **Sistema de Backups**: Copias de seguridad automáticas con múltiples backends (S3, SFTP, Local)
@@ -197,7 +198,7 @@ openjornada-api/
 ### Roles Disponibles
 
 - **admin**: Acceso completo a todos los endpoints
-- **inspector**: Acceso de solo lectura a informes y empresas (Inspección de Trabajo)
+- **inspector**: Acceso de solo lectura a informes, empresas y centros de trabajo (Inspección de Trabajo)
 - **tracker**: Solo puede crear registros de tiempo
 
 ### Permisos por Rol
@@ -209,6 +210,7 @@ openjornada-api/
 - manage_pause_types, view_pause_types
 - view_change_requests, manage_change_requests, create_change_requests
 - create_companies, view_companies, update_companies, delete_companies
+- create_work_centers, view_work_centers, update_work_centers, delete_work_centers
 - view_incidents, manage_incidents
 - view_settings, update_settings
 - view_backups, manage_backups
@@ -216,7 +218,7 @@ openjornada-api/
 - manage_sms_config, view_sms_logs, view_sms_dashboard
 
 **Inspector**:
-- view_reports, export_reports, view_companies
+- view_reports, export_reports, view_companies, view_work_centers
 
 **Tracker**:
 - create_time_records, create_change_requests, view_pause_types
@@ -227,6 +229,7 @@ openjornada-api/
 Trabajadores que registran jornada:
 - Campos: first_name, last_name, email, phone_number, id_number, hashed_password
 - company_ids: Array de IDs de empresas asociadas
+- work_center_assignments: Mapa `company_id → work_center_id` (centro asignado por empresa, opcional)
 - Soft delete: deleted_at, deleted_by
 
 ### TimeRecords
@@ -234,11 +237,17 @@ Registros de entrada/salida:
 - Tipo automático basado en último registro
 - Almacena UTC + hora local con zona horaria
 - Campos: worker_id, company_id, company_name, type, timestamp
+- work_center_id / work_center_name: snapshot del centro asignado en el momento del fichaje (opcional)
 - Calcula duración automáticamente
 
 ### Companies
 Empresas del sistema:
 - Campos: name, created_at, updated_at
+- Soft delete: deleted_at, deleted_by
+
+### WorkCenters
+Centros de trabajo (subdivisión de una empresa):
+- Campos: name, code, address, company_id
 - Soft delete: deleted_at, deleted_by
 
 ### APIUsers
@@ -306,10 +315,19 @@ Registros de copias de seguridad:
 - `PATCH /api/companies/{id}` - Actualizar empresa
 - `DELETE /api/companies/{id}` - Eliminar empresa
 
+### Centros de trabajo (Admin)
+- `GET /api/work-centers/` - Listar centros (filtro opcional `company_id`; incluye `company_name`)
+- `POST /api/work-centers/` - Crear centro
+- `GET /api/work-centers/{id}` - Obtener centro
+- `PUT /api/work-centers/{id}` - Actualizar centro (`name`/`code`/`address`; `company_id` inmutable)
+- `DELETE /api/work-centers/{id}` - Eliminar centro (soft delete + desasignación automática)
+
 ### Trabajadores (Admin)
-- `GET /api/workers/` - Listar trabajadores
+- `GET /api/workers/` - Listar trabajadores (filtro opcional `work_center_id`; incluye `work_center_assignments`/`work_center_names`)
 - `POST /api/workers/` - Crear trabajador
 - `PUT /api/workers/{id}` - Actualizar trabajador
+- `PUT /api/workers/{id}/work-center` - Asignar/limpiar el centro del trabajador para una empresa
+- `POST /api/workers/bulk-work-center` - Asignar/limpiar centro para varios trabajadores a la vez (`clear` acotable por empresa)
 - `DELETE /api/workers/{id}` - Eliminar trabajador
 
 ### Trabajadores (Público)

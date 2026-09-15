@@ -329,10 +329,17 @@ class ReportService:
         total_worked_minutes: float = 0.0
         total_pause_minutes: float = 0.0
         total_break_minutes: float = 0.0
+        # Distinct non-null center snapshots in chronological order: a worker
+        # can change centers mid-day, so the day is attributed to all of them.
+        work_center_names: list[str] = []
 
         for record in records:
             rtype = record.get("type")
             ts = ensure_utc_aware(record.get("timestamp"))
+
+            record_center = record.get("work_center_name")
+            if record_center and record_center not in work_center_names:
+                work_center_names.append(record_center)
 
             if rtype == "entry" and first_entry is None:
                 first_entry = ts
@@ -378,6 +385,7 @@ class ReportService:
             worker_id_number=worker_info["worker_id_number"],
             company_id=company_info["company_id"],
             company_name=company_info["company_name"],
+            work_center_name=" / ".join(work_center_names) if work_center_names else None,
             first_entry=first_entry,
             last_exit=last_exit,
             total_worked_minutes=total_worked_minutes,
