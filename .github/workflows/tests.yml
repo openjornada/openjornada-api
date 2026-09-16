@@ -30,4 +30,8 @@ jobs:
       - name: Run unit tests
         env:
           SECRET_KEY: test_secret_key_for_testing_only
+          # api/database.py falla en import-time si no hay URL de BD (fail-fast).
+          # --noconftest omite tests/conftest.py, que es quien la define en local.
+          # Motor no conecta al importar: los unit tests no necesitan MongoDB real.
+          MONGODB_URL: mongodb://localhost:27017
         run: python -m pytest tests/unit/ --noconftest -v
