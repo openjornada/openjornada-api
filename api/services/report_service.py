@@ -9,7 +9,7 @@ grouping records by calendar day (local time) and for display purposes.
 import logging
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone as dt_timezone
-from typing import Optional
+from typing import Iterable, Mapping, Optional
 
 import pytz
 from bson import ObjectId
@@ -44,6 +44,88 @@ def _to_iso(dt) -> str:
         return ""
     dt = ensure_utc_aware(dt)
     return dt.isoformat()
+
+
+# ---------------------------------------------------------------------------
+# Calendar period helpers (day / ISO week / calendar month)
+# ---------------------------------------------------------------------------
+
+
+def iso_week_range(d: date) -> tuple[date, date]:
+    """
+    Return the Monday and Sunday of the ISO 8601 week containing ``d``.
+
+    ISO 8601 weeks start on Monday and end on Sunday. ``date.weekday()``
+    already follows the ISO convention (Monday == 0), so no locale logic is
+    needed.
+    """
+    monday = d - timedelta(days=d.weekday())
+    return monday, monday + timedelta(days=6)
+
+
+def month_range(d: date) -> tuple[date, date]:
+    """Return the first and last calendar day of the month containing ``d``."""
+    first = d.replace(day=1)
+    if first.month == 12:
+        next_first = date(first.year + 1, 1, 1)
+    else:
+        next_first = date(first.year, first.month + 1, 1)
+    return first, next_first - timedelta(days=1)
+
+
+def _sum_daily_range(daily_minutes: Mapping[date, float], start: date, end: date) -> float:
+    """Sum the minutes of every day in the inclusive [start, end] range."""
+    total = 0.0
+    current = start
+    while current <= end:
+        total += float(daily_minutes.get(current, 0.0))
+        current += timedelta(days=1)
+    return total
+
+
+def derive_period_totals(
+    daily_minutes: Mapping[date, float], day: date
+) -> tuple[float, float, float]:
+    """
+    Derive (daily, weekly, monthly) worked minutes for ``day``.
+
+    ``daily_minutes`` maps a local calendar date to the minutes worked that
+    day (already net of pauses). Weekly totals cover the full ISO week
+    (Monday-Sunday) and monthly totals the full calendar month, regardless of
+    the interval actually used to build the map.
+    """
+    week_start, week_end = iso_week_range(day)
+    month_start, month_end = month_range(day)
+    return (
+        float(daily_minutes.get(day, 0.0)),
+        _sum_daily_range(daily_minutes, week_start, week_end),
+        _sum_daily_range(daily_minutes, month_start, month_end),
+    )
+
+
+def totals_query_range(days: Iterable[date]) -> tuple[date, date]:
+    """
+    Return the minimum local date range needed to compute period totals.
+
+    Given the local dates of the rows being returned, the totals for each row
+    require both its ISO week and its calendar month in full. The minimum
+    range is therefore the union of the earliest week/month bounds and the
+    latest week/month bounds.
+
+    Raises:
+        ValueError: If ``days`` is empty.
+    """
+    days = list(days)
+    if not days:
+        raise ValueError("totals_query_range requires at least one date")
+
+    first, last = min(days), max(days)
+    first_month_start, _ = month_range(first)
+    first_week_start, _ = iso_week_range(first)
+    _, last_month_end = month_range(last)
+    _, last_week_end = iso_week_range(last)
+
+    return min(first_month_start, first_week_start), max(last_month_end, last_week_end)
 
 
 class ReportService:
@@ -561,8 +643,120 @@ class ReportService:
         return worker
 
     # ---------------------------------------------------------------------------
+    # Worked-minutes aggregation (time-records totals)
+    # ---------------------------------------------------------------------------
+
+    async def get_exit_minutes_by_day_multi(
+        self,
+        worker_ids: Iterable[str],
+        company_id: Optional[str],
+        start_date: date,
+        end_date: date,
+        tz: pytz.BaseTzInfo,
+    ) -> dict[str, dict[date, float]]:
+        """
+        Return per-worker ``{worker_id: {local_date: minutes}}`` maps in one query.
+
+        One single aggregation covers every requested worker, replacing the
+        previous one-query-per-worker pattern (N+1). Only closed shifts
+        contribute: the pipeline filters ``type == "exit"`` and sums the
+        persisted ``duration_minutes`` (already net of pauses), so an ``entry``
+        without a matching ``exit`` contributes nothing.
+
+        The local calendar day is computed inside the pipeline with
+        ``$dateToString`` using the requested timezone, so it matches the day
+        used on the Python side to derive week/month totals. The range is
+        interpreted in local time (``tz``) and converted to UTC for the
+        ``$match``, mirroring ``_month_utc_range``. When ``company_id`` is None
+        the total spans all companies for each worker, matching an unfiltered
+        listing.
+
+        Args:
+            worker_ids: MongoDB _id (string) of every worker in the result set.
+            company_id: Optional MongoDB _id (string) of the company.
+            start_date: First local day of the global range (inclusive).
+            end_date: Last local day of the global range (inclusive).
+            tz: pytz timezone used to group records by local calendar day.
+
+        Returns:
+            Dict mapping each worker_id to its ``{local_date: minutes}`` map.
+            Workers without closed shifts in the range are absent.
+        """
+        worker_ids = list(worker_ids)
+        if not worker_ids:
+            return {}
+
+        start_utc, end_utc = self._local_days_utc_range(start_date, end_date, tz)
+
+        match: dict = {
+            "worker_id": {"$in": worker_ids},
+            "type": "exit",
+            "timestamp": {"$gte": start_utc, "$lt": end_utc},
+        }
+        if company_id:
+            match["company_id"] = company_id
+
+        # Mongo accepts IANA names; pytz exposes the original name as ``.zone``
+        # (e.g. "Europe/Madrid"), and ``str(pytz.UTC)`` is "UTC".
+        timezone_name = getattr(tz, "zone", None) or str(tz)
+
+        pipeline = [
+            {"$match": match},
+            {
+                "$group": {
+                    "_id": {
+                        "worker_id": "$worker_id",
+                        "local_day": {
+                            "$dateToString": {
+                                "format": "%Y-%m-%d",
+                                "date": "$timestamp",
+                                "timezone": timezone_name,
+                            }
+                        },
+                    },
+                    "minutes": {"$sum": "$duration_minutes"},
+                }
+            },
+            {
+                "$project": {
+                    "_id": 0,
+                    "worker_id": "$_id.worker_id",
+                    "date": "$_id.local_day",
+                    "minutes": 1,
+                }
+            },
+        ]
+
+        result: dict[str, dict[date, float]] = defaultdict(dict)
+        async for doc in db.TimeRecords.aggregate(pipeline):
+            worker_id = doc.get("worker_id")
+            day_str = doc.get("date")
+            if worker_id is None or day_str is None:
+                continue
+            result[worker_id][date.fromisoformat(day_str)] = float(doc.get("minutes", 0.0))
+
+        return dict(result)
+
+    # ---------------------------------------------------------------------------
     # Date range utilities
     # ---------------------------------------------------------------------------
+
+    @staticmethod
+    def _local_days_utc_range(
+        start_date: date, end_date: date, tz: pytz.BaseTzInfo
+    ) -> tuple[datetime, datetime]:
+        """
+        Return (start_utc, end_utc) covering whole local days [start, end].
+
+        ``start_utc`` is midnight local time on ``start_date`` and ``end_utc``
+        is midnight local time on the day after ``end_date``, both converted to
+        UTC (start inclusive, end exclusive).
+        """
+        start_local = tz.localize(datetime.combine(start_date, datetime.min.time()))
+        end_local = tz.localize(
+            datetime.combine(end_date + timedelta(days=1), datetime.min.time())
+        )
+        return start_local.astimezone(dt_timezone.utc), end_local.astimezone(dt_timezone.utc)
 
     @staticmethod
     def _month_utc_range(

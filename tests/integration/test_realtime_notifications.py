@@ -16,14 +16,18 @@ El aislamiento por empresa del bus se prueba en tests/unit/test_event_bus.py;
 el aislamiento cross-tenant es arquitectónico (BD/proceso por tenant).
 """
 import asyncio
+from datetime import datetime, timezone as dt_timezone
 from typing import Dict
+from unittest.mock import patch
 
 import pytest
 from bson import ObjectId
 from httpx import AsyncClient
 
+import api.services.report_service as report_service_module
 from api.routers.notifications import NOTIFICATIONS_LIST_LIMIT
 from api.services.event_bus import event_bus
+from api.services.time_calculation_service import TimeCalculationService
 
 PASSWORD = "RealtimePass123!"
 TRACKER_PASSWORD = "TrackerPass123!"
@@ -373,3 +377,217 @@ class TestRealtimeNotifications:
         finally:
             await test_db.notifications.delete_many({"company_id": company_id})
             await test_db.APIUsers.delete_one({"email": "admin@test.com"})
+
+
+def _utc(year: int, month: int, day: int, hour: int = 8, minute: int = 0) -> datetime:
+    return datetime(year, month, day, hour, minute, 0, tzinfo=dt_timezone.utc)
+
+
+async def _insert_exit(test_db, worker_id, company_id, worker_name, ts, duration):
+    await test_db.TimeRecords.insert_one({
+        "worker_id": worker_id,
+        "worker_name": worker_name,
+        "type": "exit",
+        "timestamp": ts,
+        "created_at": ts,
+        "company_id": company_id,
+        "recorded_by": "fichaje_event_totals_test",
+        "duration_minutes": duration,
+    })
+
+
+def _duration(value: float):
+    """Async replacement for TimeCalculationService.calculate_duration_with_pauses."""
+
+    async def _fake(*args, **kwargs):
+        return value
+
+    return _fake
+
+
+async def _cleanup(test_db, company_id, worker_id):
+    if company_id:
+        await test_db.notifications.delete_many({"company_id": company_id})
+    if worker_id:
+        await test_db.WorkerShiftStates.delete_many({"worker_id": worker_id})
+        await test_db.TimeRecords.delete_many({"worker_id": worker_id})
+        await test_db.Workers.delete_one({"_id": ObjectId(worker_id)})
+    if company_id:
+        await test_db.Companies.delete_one({"_id": ObjectId(company_id)})
+    await test_db.APIUsers.delete_one({"email": "admin@test.com"})
+
+
+class TestFichajeEventTotals:
+    """`fichaje.created` carries the worker's day/week/month totals.
+
+    The listing inserts the new row from the event without refetching, so the
+    total columns must be present in the payload. The totals are computed in
+    the worker's `default_timezone` (fallback UTC) and are best-effort: a
+    failure must not abort the already-committed fichaje.
+    """
+
+    @pytest.mark.asyncio
+    async def test_exit_event_carries_period_totals(
+        self, async_client: AsyncClient, admin_headers: Dict[str, str], test_db
+    ):
+        """Two exits the same day plus a month-crossing ISO week."""
+        company_id = worker_id = None
+        try:
+            company_id, email, worker_id = await _create_company_and_worker(
+                async_client, admin_headers, test_db, "evt"
+            )
+            await test_db.notifications.delete_many({"company_id": company_id})
+
+            worker_name = "Realtime evt"
+            # ISO week 2026-06-29 (Mon) .. 2026-07-05 (Sun) crosses June/July.
+            await _insert_exit(test_db, worker_id, company_id, worker_name, _utc(2026, 6, 29), 100.0)
+            await _insert_exit(test_db, worker_id, company_id, worker_name, _utc(2026, 7, 1), 50.0)
+            await _insert_exit(test_db, worker_id, company_id, worker_name, _utc(2026, 7, 5), 80.0)
+            # Same July month, later week (only counts towards the month total).
+            await _insert_exit(test_db, worker_id, company_id, worker_name, _utc(2026, 7, 20), 200.0)
+
+            fixed_now = _utc(2026, 7, 1, 10, 0)
+            with patch("api.routers.time_records.datetime") as mock_dt, patch.object(
+                TimeCalculationService, "calculate_duration_with_pauses", _duration(90.0)
+            ):
+                mock_dt.now.return_value = fixed_now
+                entry = await _fichaje(async_client, admin_headers, company_id, email, action="entry")
+                assert entry.status_code == 201, entry.text
+                exit_resp = await _fichaje(async_client, admin_headers, company_id, email, action="exit")
+                assert exit_resp.status_code == 201, exit_resp.text
+
+            doc = await test_db.notifications.find_one(
+                {"company_id": company_id, "payload.record_type": "exit"}
+            )
+            assert doc is not None, "no se publicó el evento del exit"
+            payload = doc["payload"]
+            # The freshly created exit (patched to 90 min) is already committed
+            # and must be included in its own totals.
+            assert payload["daily_total_minutes"] == 140.0    # 50 + 90
+            assert payload["weekly_total_minutes"] == 320.0   # 100 + 50 + 80 + 90
+            assert payload["monthly_total_minutes"] == 420.0  # 50 + 80 + 200 + 90
+        finally:
+            await _cleanup(test_db, company_id, worker_id)
+
+    @pytest.mark.asyncio
+    async def test_totals_use_worker_default_timezone(
+        self, async_client: AsyncClient, admin_headers: Dict[str, str], test_db
+    ):
+        """A worker in Europe/Madrid gets day boundaries in local time."""
+        company_id = worker_id = None
+        try:
+            company_id, email, worker_id = await _create_company_and_worker(
+                async_client, admin_headers, test_db, "tz"
+            )
+            await test_db.notifications.delete_many({"company_id": company_id})
+            await test_db.Workers.update_one(
+                {"_id": ObjectId(worker_id)},
+                {"$set": {"default_timezone": "Europe/Madrid"}},
+            )
+
+            worker_name = "Realtime tz"
+            # Madrid is UTC+2: 20:00 UTC Jul 1 -> 22:00 local Jul 1;
+            # 23:30 UTC Jul 1 -> 01:30 local Jul 2.
+            await _insert_exit(test_db, worker_id, company_id, worker_name, _utc(2026, 7, 1, 20), 60.0)
+            await _insert_exit(test_db, worker_id, company_id, worker_name, _utc(2026, 7, 1, 23, 30), 120.0)
+
+            # 22:30 UTC -> 00:30 local Jul 2, i.e. the new exit's local day.
+            fixed_now = _utc(2026, 7, 1, 22, 30)
+            with patch("api.routers.time_records.datetime") as mock_dt, patch.object(
+                TimeCalculationService, "calculate_duration_with_pauses", _duration(30.0)
+            ):
+                mock_dt.now.return_value = fixed_now
+                entry = await _fichaje(async_client, admin_headers, company_id, email, action="entry")
+                assert entry.status_code == 201, entry.text
+                exit_resp = await _fichaje(async_client, admin_headers, company_id, email, action="exit")
+                assert exit_resp.status_code == 201, exit_resp.text
+
+            doc = await test_db.notifications.find_one(
+                {"company_id": company_id, "payload.record_type": "exit"}
+            )
+            assert doc is not None
+            payload = doc["payload"]
+            # Local day = Jul 2 -> 120 (23:30 UTC) + 30. A UTC day would be
+            # Jul 1 -> 60 + 30 = 90, so 150 proves the worker tz was applied.
+            assert payload["daily_total_minutes"] == 150.0
+            assert payload["weekly_total_minutes"] == 210.0   # 60 + 120 + 30
+            assert payload["monthly_total_minutes"] == 210.0
+        finally:
+            await _cleanup(test_db, company_id, worker_id)
+
+    @pytest.mark.asyncio
+    async def test_totals_fall_back_to_utc_when_unset(
+        self, async_client: AsyncClient, admin_headers: Dict[str, str], test_db
+    ):
+        """A worker with no `default_timezone` groups days in UTC."""
+        company_id = worker_id = None
+        try:
+            company_id, email, worker_id = await _create_company_and_worker(
+                async_client, admin_headers, test_db, "utz"
+            )
+            await test_db.notifications.delete_many({"company_id": company_id})
+            await test_db.Workers.update_one(
+                {"_id": ObjectId(worker_id)}, {"$unset": {"default_timezone": ""}}
+            )
+
+            worker_name = "Realtime utz"
+            await _insert_exit(test_db, worker_id, company_id, worker_name, _utc(2026, 7, 1, 10), 60.0)
+            # Next UTC day: must not count towards the Jul 1 daily total.
+            await _insert_exit(test_db, worker_id, company_id, worker_name, _utc(2026, 7, 2, 1), 50.0)
+
+            fixed_now = _utc(2026, 7, 1, 23, 30)
+            with patch("api.routers.time_records.datetime") as mock_dt, patch.object(
+                TimeCalculationService, "calculate_duration_with_pauses", _duration(30.0)
+            ):
+                mock_dt.now.return_value = fixed_now
+                entry = await _fichaje(async_client, admin_headers, company_id, email, action="entry")
+                assert entry.status_code == 201, entry.text
+                exit_resp = await _fichaje(async_client, admin_headers, company_id, email, action="exit")
+                assert exit_resp.status_code == 201, exit_resp.text
+
+            doc = await test_db.notifications.find_one(
+                {"company_id": company_id, "payload.record_type": "exit"}
+            )
+            assert doc is not None
+            payload = doc["payload"]
+            # UTC local day = Jul 1 -> 60 + 30 = 90 (the 01:00 UTC Jul 2 exit
+            # is a different day). With Madrid it would be 50 + 30 = 80.
+            assert payload["daily_total_minutes"] == 90.0
+            assert payload["weekly_total_minutes"] == 140.0   # 60 + 50 + 30
+            assert payload["monthly_total_minutes"] == 140.0
+        finally:
+            await _cleanup(test_db, company_id, worker_id)
+
+    @pytest.mark.asyncio
+    async def test_totals_failure_still_emits_event_with_none(
+        self, async_client: AsyncClient, admin_headers: Dict[str, str], test_db
+    ):
+        """A totals error is best-effort: fichaje 201 + event with None totals."""
+        company_id = worker_id = None
+        try:
+            company_id, email, worker_id = await _create_company_and_worker(
+                async_client, admin_headers, test_db, "fail"
+            )
+            await test_db.notifications.delete_many({"company_id": company_id})
+
+            async def _boom(self, *args, **kwargs):
+                raise RuntimeError("aggregation down")
+
+            with patch.object(
+                report_service_module.ReportService,
+                "get_exit_minutes_by_day_multi",
+                _boom,
+            ):
+                resp = await _fichaje(async_client, admin_headers, company_id, email, action="entry")
+            assert resp.status_code == 201, resp.text
+
+            doc = await test_db.notifications.find_one(
+                {"company_id": company_id, "payload.record_type": "entry"}
+            )
+            assert doc is not None, "el fichaje no publicó la notificación"
+            payload = doc["payload"]
+            assert payload["daily_total_minutes"] is None
+            assert payload["weekly_total_minutes"] is None
+            assert payload["monthly_total_minutes"] is None
+        finally:
+            await _cleanup(test_db, company_id, worker_id)

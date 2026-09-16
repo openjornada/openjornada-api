@@ -338,6 +338,11 @@ Backup records:
 - `GET /api/time-records/` - List all (admin)
 - `GET /api/time-records/{worker_id}/latest` - Latest record
 
+The listings return the optional `daily_total_minutes`, `weekly_total_minutes` and
+`monthly_total_minutes` fields on each record: the worker's worked minutes for the day, the ISO week
+(Monday-Sunday) and the calendar month containing the record. They are computed on the fly from
+clock-out events (open shifts contribute no minutes) and honor the `timezone` parameter.
+
 ### Incidents
 - `POST /api/incidents/` - Create incident (public with auth)
 - `GET /api/incidents/` - List incidents (admin)

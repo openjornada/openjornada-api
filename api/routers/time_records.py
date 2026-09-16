@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, status, Depends, Query
 from datetime import datetime, date, timezone as dt_timezone
 from typing import List, Optional
+from collections import defaultdict
 from bson.objectid import ObjectId
 import logging
 import pytz
@@ -22,6 +23,11 @@ from ..auth.subscription_guard import require_active_subscription
 from ..services.time_calculation_service import TimeCalculationService
 from ..services.integrity_service import IntegrityService
 from ..services.notification_service import emit_notification
+from ..services.report_service import (
+    ReportService,
+    derive_period_totals,
+    totals_query_range,
+)
 from .shift_state import transition_shift_state, revert_shift_state
 
 router = APIRouter()
@@ -285,6 +291,36 @@ async def create_time_record(
 
     # PASO H — notificación en tiempo real (outbox + bus). Best-effort:
     # emit_notification nunca lanza, así que un fallo aquí NO aborta el fichaje.
+    # Totales día/semana/mes del trabajador para que el admin pinte la fila
+    # recién creada sin recargar. Se calculan con la zona del trabajador
+    # (default_timezone, fallback UTC): el evento se difunde a todos los
+    # clientes del tenant, así que no existe una zona de navegador única.
+    # Best-effort: el fichaje ya está commiteado; un fallo aquí no debe
+    # abortarlo ni impedir la notificación.
+    daily_total_minutes = weekly_total_minutes = monthly_total_minutes = None
+    try:
+        try:
+            worker_tz = pytz.timezone(worker.get("default_timezone") or "UTC")
+        except Exception:
+            worker_tz = pytz.UTC
+        local_day = current_time_utc.astimezone(worker_tz).date()
+        range_start, range_end = totals_query_range([local_day])
+        worker_totals = await ReportService().get_exit_minutes_by_day_multi(
+            worker_ids=[worker_id],
+            company_id=credentials.company_id,
+            start_date=range_start,
+            end_date=range_end,
+            tz=worker_tz,
+        )
+        daily_total_minutes, weekly_total_minutes, monthly_total_minutes = (
+            derive_period_totals(worker_totals.get(worker_id, {}), local_day)
+        )
+    except Exception as totals_exc:
+        logger.error(
+            f"Error calculando totales del fichaje "
+            f"(worker={worker_id}, company={credentials.company_id}): {totals_exc!r}"
+        )
+
     await emit_notification(
         event_type="fichaje.created",
         company_id=credentials.company_id,
@@ -297,6 +333,11 @@ async def create_time_record(
             "company_id": credentials.company_id,
             "company_name": company_name,
             "duration_minutes": response.duration_minutes,
+            # Totales del trabajador (día/semana ISO/mes calendario) para que el
+            # admin inserte la fila en vivo con las columnas de totales.
+            "daily_total_minutes": daily_total_minutes,
+            "weekly_total_minutes": weekly_total_minutes,
+            "monthly_total_minutes": monthly_total_minutes,
             # Snapshot del centro resuelto en el fichaje; el admin lo muestra en
             # tiempo real sin necesidad de recargar (contrato del frontend).
             "work_center_id": response.work_center_id,
@@ -354,6 +395,13 @@ async def get_all_time_records(
     """Get time records for all workers with optional date filtering, company filtering, worker name filtering and timezone conversion"""
     query = {}
 
+    # Resolve timezone once: used for the date filter and for the per-worker
+    # day/week/month totals below (same fallback as before).
+    try:
+        tz = pytz.timezone(timezone)
+    except Exception:
+        tz = pytz.UTC
+
     # Company filtering
     if company_id:
         query["company_id"] = company_id
@@ -368,11 +416,6 @@ async def get_all_time_records(
 
     # Date filtering considering timezone
     if start_date or end_date:
-        try:
-            tz = pytz.timezone(timezone)
-        except Exception:
-            tz = pytz.UTC
-
         date_query = {}
 
         if start_date:
@@ -390,8 +433,9 @@ async def get_all_time_records(
         if date_query:
             query["timestamp"] = date_query
 
-    # Get all time records with applied filters
-    time_records = []
+    # Get all time records with applied filters. Rows are collected first so
+    # that per-worker totals can be computed with one extra query per worker.
+    time_records_data = []
 
     async for record in db.TimeRecords.find(query).sort("created_at", -1):
         # Try to get worker_name from record first (new records have it)
@@ -425,9 +469,45 @@ async def get_all_time_records(
         record_data["worker_id_number"] = worker_id_number
         record_data["timestamp"] = ensure_utc_aware(record.get("timestamp"))
 
-        # Create history response
-        time_record = TimeRecordHistoryResponse(**record_data)
-        time_records.append(time_record)
+        time_records_data.append(record_data)
+
+    # Attach per-worker day/week/month totals with a single aggregation for all
+    # workers. Each worker keeps its own minimum range (union of the earliest
+    # ISO week/month bounds and the latest ones touched by its returned rows);
+    # the query sent to Mongo is the union of those per-worker ranges.
+    report_service = ReportService()
+    worker_days: dict[str, list[date]] = defaultdict(list)
+    for record_data in time_records_data:
+        ts = record_data["timestamp"]
+        if ts is not None:
+            worker_days[record_data["worker_id"]].append(ts.astimezone(tz).date())
+
+    worker_daily_minutes: dict[str, dict[date, float]] = {}
+    if worker_days:
+        per_worker_ranges = [totals_query_range(days) for days in worker_days.values()]
+        range_start = min(start for start, _ in per_worker_ranges)
+        range_end = max(end for _, end in per_worker_ranges)
+        worker_daily_minutes = await report_service.get_exit_minutes_by_day_multi(
+            worker_ids=list(worker_days.keys()),
+            company_id=company_id,
+            start_date=range_start,
+            end_date=range_end,
+            tz=tz,
+        )
+
+    time_records = []
+    for record_data in time_records_data:
+        ts = record_data["timestamp"]
+        if ts is not None:
+            daily, weekly, monthly = derive_period_totals(
+                worker_daily_minutes.get(record_data["worker_id"], {}),
+                ts.astimezone(tz).date(),
+            )
+            record_data["daily_total_minutes"] = daily
+            record_data["weekly_total_minutes"] = weekly
+            record_data["monthly_total_minutes"] = monthly
+
+        time_records.append(TimeRecordHistoryResponse(**record_data))
 
     return time_records
 
@@ -436,6 +516,7 @@ async def get_worker_time_records(
     worker_id: str,
     start_date: Optional[date] = Query(None, description="Start date filter (YYYY-MM-DD)"),
     end_date: Optional[date] = Query(None, description="End date filter (YYYY-MM-DD)"),
+    timezone: Optional[str] = Query("UTC", description="Timezone for grouping the totals"),
     current_user: APIUser = Depends(PermissionChecker("view_worker_time_records"))
 ):
     """Get time records for a specific worker with optional date filtering"""
@@ -450,7 +531,13 @@ async def get_worker_time_records(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Worker not found"
         )
-    
+
+    # Resolve timezone for the per-worker day/week/month totals.
+    try:
+        tz = pytz.timezone(timezone)
+    except Exception:
+        tz = pytz.UTC
+
     # Set the base query to filter by worker
     query = {"worker_id": worker_id}
     
@@ -468,8 +555,9 @@ async def get_worker_time_records(
         if date_query:
             query["timestamp"] = date_query
 
-    # Get all time records for this worker with applied filters
-    time_records = []
+    # Get all time records for this worker with applied filters. Rows are
+    # collected first so the totals need only one extra query for the worker.
+    time_records_data = []
     worker_id_number = worker.get("id_number", "Missing ID")
 
     async for record in db.TimeRecords.find(query).sort("created_at", -1):
@@ -483,8 +571,39 @@ async def get_worker_time_records(
         record_data["worker_id_number"] = worker_id_number
         record_data["timestamp"] = ensure_utc_aware(record.get("timestamp"))
 
-        time_record = TimeRecordHistoryResponse(**record_data)
-        time_records.append(time_record)
+        time_records_data.append(record_data)
+
+    # Attach day/week/month totals for this worker: the multi-worker
+    # aggregation called with a single-element list keeps this to one query.
+    daily_minutes: dict[date, float] = {}
+    days = [
+        record_data["timestamp"].astimezone(tz).date()
+        for record_data in time_records_data
+        if record_data["timestamp"] is not None
+    ]
+    if days:
+        range_start, range_end = totals_query_range(days)
+        worker_totals = await ReportService().get_exit_minutes_by_day_multi(
+            worker_ids=[worker_id],
+            company_id=None,
+            start_date=range_start,
+            end_date=range_end,
+            tz=tz,
+        )
+        daily_minutes = worker_totals.get(worker_id, {})
+
+    time_records = []
+    for record_data in time_records_data:
+        ts = record_data["timestamp"]
+        if ts is not None:
+            daily, weekly, monthly = derive_period_totals(
+                daily_minutes, ts.astimezone(tz).date()
+            )
+            record_data["daily_total_minutes"] = daily
+            record_data["weekly_total_minutes"] = weekly
+            record_data["monthly_total_minutes"] = monthly
+
+        time_records.append(TimeRecordHistoryResponse(**record_data))
 
     return time_records
 
