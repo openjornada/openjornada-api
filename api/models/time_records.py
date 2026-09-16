@@ -76,6 +76,12 @@ class TimeRecordHistoryResponse(TimeRecordResponse):
     worker_name: str  # Required in history (overrides optional from parent)
     worker_id_number: str  # DNI del trabajador
 
+    # Totales por trabajador calculados al vuelo (solo turnos cerrados). Campos
+    # opcionales y aditivos para no romper clientes existentes.
+    daily_total_minutes: Optional[float] = None
+    weekly_total_minutes: Optional[float] = None  # Semana ISO (lunes-domingo)
+    monthly_total_minutes: Optional[float] = None  # Mes calendario
+
 class WorkerCurrentStatusResponse(BaseModel):
     """Estado actual del trabajador en una empresa"""
     worker_id: str

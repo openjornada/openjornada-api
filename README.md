@@ -341,6 +341,12 @@ Registros de copias de seguridad:
 - `GET /api/time-records/` - Listar todos (admin)
 - `GET /api/time-records/{worker_id}/latest` - Último registro
 
+Los listados devuelven en cada registro los campos opcionales `daily_total_minutes`,
+`weekly_total_minutes` y `monthly_total_minutes`: minutos trabajados por el trabajador en el día,
+la semana ISO (lunes-domingo) y el mes natural que contiene el registro. Se calculan al vuelo a
+partir de los eventos de salida (los turnos abiertos no aportan minutos) y respetan el parámetro
+`timezone`.
+
 ### Incidencias
 - `POST /api/incidents/` - Crear incidencia (público con auth)
 - `GET /api/incidents/` - Listar incidencias (admin)
