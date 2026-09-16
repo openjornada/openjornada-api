@@ -4,7 +4,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-MONGO_URL = os.getenv("MONGODB_URL") or os.getenv("MONGO_URL", "mongodb://mongodb:27017")
+MONGO_URL = os.getenv("MONGODB_URL") or os.getenv("MONGO_URL")
+if not MONGO_URL:
+    # No default: a deploy that forgets to set this must fail immediately at
+    # import time, not 30s into startup with a confusing pymongo DNS error.
+    raise RuntimeError(
+        "MONGODB_URL (or legacy MONGO_URL) environment variable is required "
+        "and must not be empty. Set it before starting the API (e.g. in .env)."
+    )
 DB_NAME = os.getenv("DATABASE_NAME") or os.getenv("DB_NAME", "time_tracking_db")
 
 # Retención del outbox de notificaciones (segundos). Las notificaciones son
