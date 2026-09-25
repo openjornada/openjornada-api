@@ -1,7 +1,36 @@
 from enum import Enum
-from pydantic import BaseModel, Field, AwareDatetime, EmailStr
-from typing import Optional, List, Literal
+from pydantic import BaseModel, Field, AwareDatetime, EmailStr, AfterValidator
+from typing import Annotated, Optional, List, Literal
 from datetime import date
+import pytz
+
+
+def _validate_timezone(value: str) -> str:
+    """Reject IANA names the bundled pytz database does not know about."""
+    if value not in pytz.all_timezones_set:
+        raise ValueError(f"Unknown IANA timezone: {value}")
+    return value
+
+
+# Timezone chosen by an admin/inspector on the report query params. Validated
+# here so an unknown zone answers 422 instead of blowing up with an
+# UnknownTimeZoneError deeper in the report pipeline. Not used on the worker
+# request models: there the window is resolved server-side from the worker's
+# own record (api/utils/timezones.py), so an unknown zone must degrade rather
+# than lock the worker out of their month.
+# On a query param it MUST be written as ``Annotated[IanaTimezone, Query(...)]``
+# with the default after the ``=``: in the ``timezone: IanaTimezone =
+# Query(...)`` form FastAPI overwrites the field annotation with the bare
+# ``str`` and the validator never runs.
+IanaTimezone = Annotated[str, AfterValidator(_validate_timezone)]
+
+# Timezone a worker's client may still send: accepted and ignored, so already
+# deployed webapp versions keep working while the server delimits the month.
+_IGNORED_TIMEZONE_DESC = (
+    "Ignorado: la ventana del mes la resuelve el servidor con la zona horaria "
+    "configurada en la ficha del trabajador. Se acepta por compatibilidad con "
+    "clientes ya desplegados."
+)
 
 
 class ExportFormat(str, Enum):
@@ -147,7 +176,7 @@ class ReportFilters(BaseModel):
     year: int = Field(..., ge=2020, le=2035)
     month: int = Field(..., ge=1, le=12)
     worker_id: Optional[str] = None
-    timezone: str = "Europe/Madrid"
+    timezone: IanaTimezone = "Europe/Madrid"
 
 
 class ExportRequest(BaseModel):
@@ -158,7 +187,7 @@ class ExportRequest(BaseModel):
     month: int = Field(..., ge=1, le=12)
     worker_id: Optional[str] = None
     format: ExportFormat = ExportFormat.PDF
-    timezone: str = "Europe/Madrid"
+    timezone: IanaTimezone = "Europe/Madrid"
 
 
 class WorkerReportRequest(BaseModel):
@@ -169,6 +198,7 @@ class WorkerReportRequest(BaseModel):
     company_id: str
     year: int = Field(..., ge=2020, le=2035)
     month: int = Field(..., ge=1, le=12)
+    timezone: Optional[str] = Field(None, description=_IGNORED_TIMEZONE_DESC)
 
 
 class MonthlySignatureRequest(BaseModel):
@@ -179,6 +209,7 @@ class MonthlySignatureRequest(BaseModel):
     company_id: str
     year: int = Field(..., ge=2020, le=2035)
     month: int = Field(..., ge=1, le=12)
+    timezone: Optional[str] = Field(None, description=_IGNORED_TIMEZONE_DESC)
 
 
 class MonthlySignatureResponse(BaseModel):
@@ -191,6 +222,7 @@ class MonthlySignatureResponse(BaseModel):
     month: int
     status: Literal["signed"]
     signed_at: AwareDatetime
+    content_hash: str        # SHA-256 digest of the month's records at signing time
 
 
 class SignatureStatusResponse(BaseModel):
@@ -218,6 +250,42 @@ class RecordIntegrity(BaseModel):
     # not match. "legacy": record predates this capability, no hash stored.
 
 
+class AuditedCorrection(BaseModel):
+    """Approved change-request applied to a signed month after the signature."""
+
+    change_request_id: str
+    reviewed_by_admin_email: str    # Admin who approved the correction
+    reviewed_at: AwareDatetime      # When the correction was applied (UTC)
+    date: str                       # ISO date (YYYY-MM-DD) of the affected record
+    reason: str                     # Reason given by the worker
+
+
+class MonthlySignatureVerification(BaseModel):
+    """Result of verifying a monthly signature against the current records."""
+
+    signature_id: str
+    status: Literal["verified", "mismatch", "legacy", "unsupported_version"]
+    # "verified": recomputed digest matches the signed one. "mismatch": it
+    # does not — check audited_corrections to tell an audited fix from an
+    # unexplained alteration. "legacy": signature predates this capability,
+    # no digest was ever stored, nothing can be asserted about it.
+    # "unsupported_version": the digest was written by an algorithm version
+    # this code cannot recompute, so nothing was compared (reporting a
+    # mismatch would read as an alteration that never happened).
+    content_hash: str              # Digest persisted at signing ("" on legacy)
+    computed_hash: str             # Digest recomputed from current records ("" on legacy)
+    content_hash_version: Optional[str] = None
+    timezone: Optional[str] = None  # IANA timezone the signed month was delimited with
+    worker_id: str
+    company_id: str
+    year: int
+    month: int
+    signed_at: AwareDatetime
+    signed_record_count: Optional[int] = None   # Records covered when signed (None on legacy)
+    current_record_count: Optional[int] = None  # Records covered now (None on legacy)
+    audited_corrections: List[AuditedCorrection] = Field(default_factory=list)
+
+
 class WorkerExportRequest(BaseModel):
     """Request body for a worker to export their own monthly report."""
 
@@ -227,4 +295,4 @@ class WorkerExportRequest(BaseModel):
     year: int = Field(..., ge=2020, le=2035)
     month: int = Field(..., ge=1, le=12)
     format: Literal["pdf", "csv"] = "pdf"
-    timezone: str = "Europe/Madrid"
+    timezone: Optional[str] = Field(None, description=_IGNORED_TIMEZONE_DESC)

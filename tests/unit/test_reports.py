@@ -7,6 +7,7 @@ External dependencies (database, authentication) are fully mocked.
 
 import hashlib
 import json
+import logging
 from datetime import date, datetime, timezone as dt_timezone
 from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -23,14 +24,18 @@ from api.models.auth import APIUser
 from api.models.reports import (
     DailyWorkSummary,
     ExportFormat,
+    MonthlySignatureRequest,
+    MonthlySignatureVerification,
     ReportFilters,
     WorkerMonthlySummary,
     CompanyMonthlySummary,
+    WorkerExportRequest,
     WorkerReportRequest,
 )
 from api.services.export_service import ExportService
-from api.services.integrity_service import IntegrityService
+from api.services.integrity_service import MONTHLY_DIGEST_VERSION, IntegrityService
 from api.services.report_service import ReportService, ensure_utc_aware
+from api.utils.timezones import DEFAULT_REPORT_TIMEZONE, resolve_worker_timezone
 
 
 # ===========================================================================
@@ -313,6 +318,295 @@ class TestIntegrityService:
         expected = hashlib.sha256(b"").hexdigest()
         assert result == expected
 
+    # -- monthly digest -----------------------------------------------------
+
+    @staticmethod
+    def _monthly_records() -> list[dict]:
+        """Two distinct time records plus one pause, as raw Mongo documents."""
+        return [
+            {
+                "worker_id": "w1", "company_id": "c1", "type": "entry",
+                "timestamp": _make_utc(2026, 1, 15, 8, 0), "duration_minutes": None,
+                "created_at": _make_utc(2026, 1, 15, 8, 0),
+            },
+            {
+                "worker_id": "w1", "company_id": "c1", "type": "exit",
+                "timestamp": _make_utc(2026, 1, 15, 16, 30), "duration_minutes": 480.0,
+                "created_at": _make_utc(2026, 1, 15, 16, 30),
+            },
+            {
+                "worker_id": "w1", "company_id": "c1", "type": "pause_start",
+                "timestamp": _make_utc(2026, 1, 14, 13, 0), "duration_minutes": None,
+                "created_at": _make_utc(2026, 1, 14, 13, 0),
+            },
+        ]
+
+    def test_compute_month_digest_deterministic(self):
+        """Same record set always produces the same digest and count."""
+        records = self._monthly_records()
+        digest1, count1 = IntegrityService.compute_month_digest(records)
+        digest2, count2 = IntegrityService.compute_month_digest([dict(r) for r in records])
+        assert digest1 == digest2
+        assert count1 == count2 == 3
+        assert len(digest1) == 64
+
+        # Preimage is the version prefix + sorted leaf digests joined by \n
+        leaves = sorted(IntegrityService.compute_record_hash(r) for r in records)
+        preimage = f"{MONTHLY_DIGEST_VERSION}\n" + "\n".join(leaves)
+        assert digest1 == hashlib.sha256(preimage.encode("utf-8")).hexdigest()
+
+    def test_compute_month_digest_order_independent(self):
+        """Retrieval order never changes the digest."""
+        records = self._monthly_records()
+        digest, count = IntegrityService.compute_month_digest(records)
+        assert IntegrityService.compute_month_digest(list(reversed(records))) == (digest, count)
+        # A different permutation (sorted by timestamp descending) too.
+        permuted = sorted(records, key=lambda r: r["timestamp"], reverse=True)
+        assert IntegrityService.compute_month_digest(permuted) == (digest, count)
+
+    def test_compute_month_digest_empty_set(self):
+        """The empty set hashes the bare version prefix; count is 0."""
+        digest, count = IntegrityService.compute_month_digest([])
+        assert count == 0
+        assert digest == hashlib.sha256(f"{MONTHLY_DIGEST_VERSION}\n".encode("utf-8")).hexdigest()
+
+    def test_compute_month_digest_ignores_stored_integrity_hash(self):
+        """Leaves are recomputed from current values, never read from the
+        stored integrity_hash — a tampered record whose stored hash was also
+        rewritten still produces the same digest as one without any hash."""
+        base = self._monthly_records()[1]  # the exit record, has duration_minutes
+        without_hash = IntegrityService.compute_month_digest([base])
+        with_stale_hash = IntegrityService.compute_month_digest(
+            [dict(base, integrity_hash="0" * 64)]
+        )
+        with_recomputed_hash = IntegrityService.compute_month_digest(
+            [dict(base, integrity_hash=IntegrityService.compute_record_hash(base))]
+        )
+        assert without_hash == with_stale_hash == with_recomputed_hash
+
+    def test_compute_month_digest_detects_field_edit(self):
+        """Editing a hashed field of any record changes the digest."""
+        records = self._monthly_records()
+        digest, _ = IntegrityService.compute_month_digest(records)
+        edited = [dict(records[1], duration_minutes=999.0), records[0], records[2]]
+        edited_digest, edited_count = IntegrityService.compute_month_digest(edited)
+        assert edited_digest != digest
+        assert edited_count == 3
+
+    async def test_get_month_records_uses_utc_window(self):
+        """The fetcher queries worker+company over the month's UTC window,
+        delegating the range to ReportService._month_utc_range."""
+        captured: dict = {}
+
+        class _Cursor:
+            def sort(self, *_args, **_kwargs):
+                return self
+
+            async def to_list(self, _length):
+                return []
+
+        with patch("api.services.integrity_service.db") as mock_db:
+            mock_db.TimeRecords.find = MagicMock(side_effect=lambda q: captured.update(query=q) or _Cursor())
+            records = await IntegrityService.get_month_records(
+                worker_id="w1", company_id="c1", year=2026, month=6, timezone="Europe/Madrid",
+            )
+
+        assert records == []
+        query = captured["query"]
+        assert query["worker_id"] == "w1"
+        assert query["company_id"] == "c1"
+        # June 2026 in Europe/Madrid (CEST, UTC+2): 2026-05-31T22:00Z .. 2026-06-30T22:00Z
+        assert query["timestamp"]["$gte"] == datetime(2026, 5, 31, 22, 0, tzinfo=dt_timezone.utc)
+        assert query["timestamp"]["$lt"] == datetime(2026, 6, 30, 22, 0, tzinfo=dt_timezone.utc)
+
+    async def test_verify_monthly_signature_legacy(self):
+        """A signature without content_hash reports legacy and recomputes nothing."""
+        signature = {
+            "_id": "fake_object_id",
+            "worker_id": "w1", "company_id": "c1", "year": 2026, "month": 1,
+            "signed_at": _make_utc(2026, 2, 1, 12, 0),
+            # No content_hash: pre-capability signature.
+        }
+
+        with patch("api.services.integrity_service.db") as mock_db, \
+             patch("api.services.integrity_service.ObjectId", return_value="fake_object_id"):
+            mock_db.MonthlySignatures.find_one = AsyncMock(return_value=signature)
+            # Legacy must not touch TimeRecords at all: any find() blows up.
+            mock_db.TimeRecords.find = MagicMock(side_effect=AssertionError("legacy recomputed records"))
+            result = await IntegrityService.verify_monthly_signature("507f1f77bcf86cd799439011")
+
+        assert result["status"] == "legacy"
+        assert result["content_hash"] == ""
+        assert result["computed_hash"] == ""
+        assert result["signed_record_count"] is None
+        assert result["current_record_count"] is None
+        assert result["audited_corrections"] == []
+
+    async def test_verify_monthly_signature_verified(self):
+        """Untouched month: recomputed digest matches, status verified."""
+        records = self._monthly_records()
+        digest, count = IntegrityService.compute_month_digest(records)
+        signature = {
+            "_id": "fake_object_id",
+            "worker_id": "w1", "company_id": "c1", "year": 2026, "month": 1,
+            "signed_at": _make_utc(2026, 2, 1, 12, 0),
+            "content_hash": digest,
+            "content_hash_version": MONTHLY_DIGEST_VERSION,
+            "record_count": count,
+            "timezone": "Europe/Madrid",
+        }
+
+        class _Cursor:
+            def sort(self, *_args, **_kwargs):
+                return self
+
+            async def to_list(self, _length):
+                return records
+
+        with patch("api.services.integrity_service.db") as mock_db, \
+             patch("api.services.integrity_service.ObjectId", return_value="fake_object_id"):
+            mock_db.MonthlySignatures.find_one = AsyncMock(return_value=signature)
+            mock_db.TimeRecords.find = MagicMock(return_value=_Cursor())
+            result = await IntegrityService.verify_monthly_signature("507f1f77bcf86cd799439011")
+
+        assert result["status"] == "verified"
+        assert result["content_hash"] == result["computed_hash"] == digest
+        assert result["signed_record_count"] == result["current_record_count"] == 3
+        assert result["audited_corrections"] == []
+
+    def test_compute_month_digest_rejects_an_unsupported_version(self):
+        """A version this build cannot compute is a programming error, not a
+        silently different digest."""
+        with pytest.raises(ValueError, match="v99"):
+            IntegrityService.compute_month_digest(self._monthly_records(), "v99")
+
+    def test_compute_month_digest_version_is_the_preimage_prefix(self):
+        """The version argument prefixes the preimage: the same records under a
+        different version could never collide."""
+        records = self._monthly_records()
+        digest, _ = IntegrityService.compute_month_digest(records, MONTHLY_DIGEST_VERSION)
+        leaves = sorted(IntegrityService.compute_record_hash(r) for r in records)
+        preimage = f"{MONTHLY_DIGEST_VERSION}\n" + "\n".join(leaves)
+        assert digest == hashlib.sha256(preimage.encode("utf-8")).hexdigest()
+        # Same leaves, hypothetical future prefix -> different digest.
+        other = hashlib.sha256(("v2\n" + "\n".join(leaves)).encode("utf-8")).hexdigest()
+        assert digest != other
+
+    async def test_verify_monthly_signature_unsupported_version(self):
+        """A digest written by an unknown algorithm version reports
+        unsupported_version and nothing is recomputed: calling it a mismatch
+        would read as tampering that never happened."""
+        signature = {
+            "_id": "fake_object_id",
+            "worker_id": "w1", "company_id": "c1", "year": 2026, "month": 1,
+            "signed_at": _make_utc(2026, 2, 1, 12, 0),
+            "content_hash": "a" * 64,
+            "content_hash_version": "v99",
+            "record_count": 3,
+            "timezone": "Europe/Madrid",
+        }
+
+        with patch("api.services.integrity_service.db") as mock_db, \
+             patch("api.services.integrity_service.ObjectId", return_value="fake_object_id"):
+            mock_db.MonthlySignatures.find_one = AsyncMock(return_value=signature)
+            mock_db.TimeRecords.find = MagicMock(side_effect=AssertionError("records recomputed"))
+            result = await IntegrityService.verify_monthly_signature("507f1f77bcf86cd799439011")
+
+        assert result["status"] == "unsupported_version"
+        assert result["content_hash"] == "a" * 64
+        assert result["computed_hash"] == ""
+        assert result["content_hash_version"] == "v99"
+        assert result["signed_record_count"] == 3
+        assert result["current_record_count"] is None
+        assert result["audited_corrections"] == []
+
+    async def test_verify_monthly_signature_without_version_assumes_v1(self):
+        """A signature with a digest but no version field was written by this
+        same code before the field existed, so v1 is recomputed."""
+        records = self._monthly_records()
+        digest, count = IntegrityService.compute_month_digest(records)
+        signature = {
+            "_id": "fake_object_id",
+            "worker_id": "w1", "company_id": "c1", "year": 2026, "month": 1,
+            "signed_at": _make_utc(2026, 2, 1, 12, 0),
+            "content_hash": digest,
+            "record_count": count,
+            "timezone": "Europe/Madrid",
+        }
+
+        class _Cursor:
+            def sort(self, *_args, **_kwargs):
+                return self
+
+            async def to_list(self, _length):
+                return records
+
+        with patch("api.services.integrity_service.db") as mock_db, \
+             patch("api.services.integrity_service.ObjectId", return_value="fake_object_id"):
+            mock_db.MonthlySignatures.find_one = AsyncMock(return_value=signature)
+            mock_db.TimeRecords.find = MagicMock(return_value=_Cursor())
+            result = await IntegrityService.verify_monthly_signature("507f1f77bcf86cd799439011")
+
+        assert result["status"] == "verified"
+        assert result["computed_hash"] == digest
+
+    async def test_find_audited_corrections_matches_local_month_bounds(self):
+        """ChangeRequests.date is a naive local calendar date at midnight, so it is
+        matched against the local month bounds, not against the UTC window: under a
+        negative-offset zone the latter drops the 1st and pulls in the next month's.
+        Both windows are widened a day per side and the corrected instants are
+        matched too, so a correction affecting an adjacent month is not missed."""
+        captured: dict = {}
+
+        class _Cursor:
+            def sort(self, *_args, **_kwargs):
+                return self
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                raise StopAsyncIteration
+
+        signature = {
+            "worker_id": "w1", "company_id": "c1", "year": 2026, "month": 3,
+            "signed_at": _make_utc(2026, 4, 2, 12, 0),
+            "timezone": "America/New_York",
+        }
+
+        with patch("api.services.integrity_service.db") as mock_db:
+            mock_db.ChangeRequests.find = MagicMock(
+                side_effect=lambda q: captured.update(query=q) or _Cursor()
+            )
+            corrections = await IntegrityService._find_audited_corrections(signature)
+
+        assert corrections == []
+        query = captured["query"]
+        # Naive local date bounds, one day wider on each side.
+        assert {"date": {"$gte": datetime(2026, 2, 28), "$lt": datetime(2026, 4, 2)}} in query["$or"]
+        # March 2026 in America/New_York spans 2026-03-01T05:00Z..2026-04-01T04:00Z;
+        # the corrected instants are matched over that window, widened a day per side.
+        utc_window = {"$gte": _make_utc(2026, 2, 28, 5, 0), "$lt": _make_utc(2026, 4, 2, 4, 0)}
+        assert {"original_timestamp": utc_window} in query["$or"]
+        assert {"new_timestamp": utc_window} in query["$or"]
+        # The reviewed_at bound is a true UTC instant and stays as it was.
+        assert query["reviewed_at"] == {"$gt": _make_utc(2026, 4, 2, 12, 0)}
+        assert query["status"] == "accepted"
+        assert query["worker_id"] == "w1"
+        assert query["company_id"] == "c1"
+
+    async def test_verify_monthly_signature_not_found(self):
+        """Verifying a non-existent signature raises 404."""
+        from fastapi import HTTPException
+
+        with patch("api.services.integrity_service.db") as mock_db, \
+             patch("api.services.integrity_service.ObjectId", return_value="fake_object_id"):
+            mock_db.MonthlySignatures.find_one = AsyncMock(return_value=None)
+            with pytest.raises(HTTPException) as exc_info:
+                await IntegrityService.verify_monthly_signature("507f1f77bcf86cd799439011")
+
+        assert exc_info.value.status_code == 404
+
 
 # ===========================================================================
 # TestReportModels
@@ -413,6 +707,144 @@ class TestReportModels:
             month=1,
         )
         assert str(req.email) == "worker@example.com"
+        # No zone is echoed back: the server resolves the window itself.
+        assert req.timezone is None
+
+    def test_worker_request_models_never_reject_a_timezone(self):
+        """The worker surface accepts any zone — including the CLDR
+        "Etc/Unknown" fallback a browser may report, or one from a tzdata newer
+        than the bundled pytz — because it ignores it: a 422 here would leave
+        the worker unable to view or sign their own month."""
+        for model in (WorkerReportRequest, MonthlySignatureRequest, WorkerExportRequest):
+            for zone in ("Etc/Unknown", "Mars/Olympus_Mons", "America/New_York", ""):
+                req = model(
+                    email="worker@example.com", password="secret", company_id="c1",
+                    year=2026, month=1, timezone=zone,
+                )
+                assert req.timezone == zone
+
+    def test_signature_verification_timezone_is_not_validated(self):
+        """The timezone persisted on an existing signature is a response field:
+        it must stay serialisable even if the stored name is unknown to pytz."""
+        verification = MonthlySignatureVerification(
+            signature_id="s1", status="verified",
+            content_hash="a" * 64, computed_hash="a" * 64,
+            timezone="America/Coyhaique",
+            worker_id="w1", company_id="c1", year=2026, month=1,
+            signed_at=_make_utc(2026, 2, 1, 12, 0),
+        )
+        assert verification.timezone == "America/Coyhaique"
+
+    def test_signature_verification_accepts_unsupported_version_status(self):
+        """A digest made by an algorithm version this build cannot compute is a
+        fourth state of its own, not a mismatch."""
+        verification = MonthlySignatureVerification(
+            signature_id="s1", status="unsupported_version",
+            content_hash="a" * 64, computed_hash="",
+            content_hash_version="v99",
+            worker_id="w1", company_id="c1", year=2026, month=1,
+            signed_at=_make_utc(2026, 2, 1, 12, 0),
+        )
+        assert verification.status == "unsupported_version"
+
+
+# ===========================================================================
+# TestResolveWorkerTimezone
+# ===========================================================================
+
+
+class TestResolveWorkerTimezone:
+    """The month window of the worker surface comes from the worker's record."""
+
+    def test_configured_zone_is_honoured(self):
+        assert resolve_worker_timezone({"default_timezone": "Atlantic/Canary"}) == "Atlantic/Canary"
+
+    def test_utc_falls_back_to_the_default(self):
+        """"UTC" is the WorkerModel default, not a choice: honouring it would
+        move the month window of every existing worker."""
+        assert resolve_worker_timezone({"default_timezone": "UTC"}) == DEFAULT_REPORT_TIMEZONE
+        assert DEFAULT_REPORT_TIMEZONE == "Europe/Madrid"
+
+    def test_missing_or_empty_falls_back_to_the_default(self):
+        assert resolve_worker_timezone({}) == DEFAULT_REPORT_TIMEZONE
+        assert resolve_worker_timezone({"default_timezone": None}) == DEFAULT_REPORT_TIMEZONE
+        assert resolve_worker_timezone({"default_timezone": "  "}) == DEFAULT_REPORT_TIMEZONE
+
+    def test_unknown_zone_warns_and_falls_back(self, caplog):
+        """A zone this pytz build does not know degrades with a warning instead
+        of leaving the worker unable to view or sign the month."""
+        with caplog.at_level(logging.WARNING, logger="api.utils.timezones"):
+            resolved = resolve_worker_timezone(
+                {"_id": "w1", "default_timezone": "Mars/Olympus_Mons"}
+            )
+        assert resolved == DEFAULT_REPORT_TIMEZONE
+        assert "Mars/Olympus_Mons" in caplog.text
+
+
+# ===========================================================================
+# TestAdminTimezoneQueryParam
+# ===========================================================================
+
+
+@pytest.fixture()
+def admin_reports_client():
+    """TestClient over the reports router with an admin user injected.
+
+    Only request validation is exercised here: a 422 is answered before the
+    service layer, so no database is involved.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from api.auth.auth_handler import get_current_active_user
+    from api.routers import reports as reports_router
+
+    app = FastAPI()
+    app.include_router(reports_router.router, prefix="/api")
+    app.dependency_overrides[get_current_active_user] = lambda: APIUser(
+        username="admin", email="admin@example.com", role="admin",
+    )
+    return TestClient(app)
+
+
+class TestAdminTimezoneQueryParam:
+    """Unlike the worker surface, the admin/inspector query params validate the
+    zone: letting an unknown one through raised UnknownTimeZoneError deep in the
+    report pipeline, i.e. an opaque 500."""
+
+    _ENDPOINTS = (
+        "/api/reports/monthly",
+        "/api/reports/monthly/worker/w1",
+        "/api/reports/overtime",
+        "/api/reports/export/monthly",
+        "/api/reports/export/overtime",
+    )
+
+    @pytest.mark.parametrize("zone", ["Etc/Unknown", "Mars/Olympus_Mons", ""])
+    def test_unknown_timezone_is_rejected(self, admin_reports_client, zone):
+        for url in self._ENDPOINTS:
+            resp = admin_reports_client.get(
+                url,
+                params={"company_id": "c1", "year": 2026, "month": 1, "timezone": zone},
+            )
+            assert resp.status_code == 422, f"{url} with {zone!r}: {resp.text}"
+
+    def test_known_timezone_reaches_the_service(self, admin_reports_client):
+        """A valid zone is forwarded untouched (the validator only rejects)."""
+        with patch.object(
+            ReportService,
+            "get_company_monthly_summary",
+            AsyncMock(return_value=_make_company_summary()),
+        ) as mocked:
+            resp = admin_reports_client.get(
+                "/api/reports/monthly",
+                params={
+                    "company_id": "c1", "year": 2026, "month": 1,
+                    "timezone": "Atlantic/Canary",
+                },
+            )
+        assert resp.status_code == 200, resp.text
+        assert mocked.await_args.kwargs["timezone"] == "Atlantic/Canary"
 
 
 # ===========================================================================
