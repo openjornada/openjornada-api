@@ -359,6 +359,7 @@ partir de los eventos de salida (los turnos abiertos no aportan minutos) y respe
 - `GET /api/reports/export/monthly` - Exportar informe mensual (CSV/XLSX/PDF)
 - `GET /api/reports/export/overtime` - Exportar informe de horas extra (CSV/XLSX/PDF)
 - `GET /api/reports/integrity/{record_id}` - Verificar integridad de registro
+- `GET /api/reports/integrity/monthly-signature/{signature_id}` - Verificar firma mensual (verified/mismatch/legacy)
 
 ### Informes del Trabajador (Auth por request)
 - `POST /api/reports/worker/monthly` - Ver resumen mensual propio
@@ -518,8 +519,50 @@ La API incluye un sistema completo de informes para cumplimiento laboral:
     datos (auditores, trabajadores, la nube gestionada), no una garantía criptográfica frente a
     quien administra el propio servidor/base de datos (autoalojado).
 - **Hash de exportaciones** devuelto en cabecera HTTP `X-Report-Hash`
-- **Firma mensual del trabajador**: El trabajador puede firmar sus registros mensuales; estado consultable (últimos 12 meses)
+- **Firma mensual del trabajador**: El trabajador puede firmar sus registros mensuales; estado consultable (últimos 12 meses). La firma queda ligada al contenido firmado — ver sección siguiente.
 - **Pie legal**: "Generado por OpenJornada. Registro conforme al art. 34.9 ET y RD-Ley 8/2019."
+
+### Firma mensual y digest de contenido
+
+Al firmar (`POST /api/reports/worker/monthly/sign`), la API calcula un **digest SHA-256 del
+mes**: rehashea cada fichaje cubierto desde sus valores actuales (nunca desde su
+`integrity_hash` almacenado), ordena los hashes resultantes y los agrega bajo una versión de
+algoritmo (`v1`). La firma persiste `content_hash`, `content_hash_version`, `record_count` y
+el `timezone` con el que se delimitó el mes, resuelto en el servidor a partir de la ficha
+del trabajador (con `Europe/Madrid` como valor por defecto si no tiene una zona
+configurada). El `timezone` de la petición se acepta y se ignora por compatibilidad con
+clientes ya desplegados, de modo que la verificación reproduce exactamente la ventana que
+el trabajador vio al firmar.
+
+Solo se pueden firmar **meses ya cerrados**: el mes en curso y los futuros se rechazan con un
+error 400. Un mes que todavía puede recibir fichajes no es un objeto estable que tenga sentido
+firmar.
+
+Verificación: `GET /api/reports/integrity/monthly-signature/{signature_id}` (requiere permiso
+`view_reports`) recalcula el digest sobre los datos actuales y devuelve:
+
+- `verified`: el conjunto de fichajes es idéntico al firmado (detecta edición, borrado e
+  inserción retroactiva de fichajes).
+- `mismatch`: el contenido cambió desde la firma. La respuesta incluye `record_count` firmado
+  y actual, y la lista `audited_corrections` con los change-requests aprobados aplicados al
+  mismo trabajador y mes después de `signed_at` (quién aprobó y cuándo): un `mismatch` con
+  trazas adjuntas son correcciones auditadas legítimas, no manipulación; un `mismatch` con la
+  lista vacía no tiene explicación y debe investigarse.
+- `legacy`: la firma es anterior a esta capacidad y no tiene digest asociado. **No se rellena
+  retroactivamente**: calcular un digest hoy sobre datos que podrían estar ya alterados
+  presentaría historia no verificada como verificada. También se reporta `legacy` —y no un
+  error— cuando la firma guarda un `timezone` que esta versión no puede resolver y, por tanto,
+  no puede reproducir la ventana firmada.
+
+Qué garantiza la firma y qué no:
+
+- **Garantiza**: que la firma está criptográficamente ligada a un conjunto concreto de
+  fichajes en un momento concreto, y que cualquier edición, borrado o inserción posterior
+  sobre ese mes es detectable mediante la verificación.
+- **No garantiza** inmutabilidad frente a quien administra la base de datos: con acceso
+  directo puede reescribirse también el documento de firma. Es *tamper-evidence*, no
+  *tamper-proof*. El sellado externo del digest (RFC 3161 / TSA) eliminaría esa limitación y
+  está planificado como fase posterior.
 
 ### Zona Horaria
 

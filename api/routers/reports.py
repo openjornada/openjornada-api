@@ -10,6 +10,7 @@ Exposes two families of endpoints:
     GET  /reports/export/monthly           Export monthly report (CSV/XLSX/PDF)
     GET  /reports/export/overtime          Export overtime report as CSV
     GET  /reports/integrity/{record_id}    Verify record integrity (SHA-256)
+    GET  /reports/integrity/monthly-signature/{id}  Verify monthly signature digest
 
 - Worker endpoints (email + password authentication, no JWT required):
     POST /reports/worker/monthly           Worker's own monthly report
@@ -22,10 +23,12 @@ import io
 import csv
 import logging
 from datetime import datetime, timezone as dt_timezone
-from typing import Optional
+from typing import Annotated, Optional
 
+import pytz
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
+from pymongo.errors import DuplicateKeyError
 
 from ..auth.permissions import PermissionChecker
 from ..database import db
@@ -33,8 +36,10 @@ from ..models.auth import APIUser
 from ..models.reports import (
     CompanyMonthlySummary,
     ExportFormat,
+    IanaTimezone,
     MonthlySignatureRequest,
     MonthlySignatureResponse,
+    MonthlySignatureVerification,
     OvertimeReport,
     RecordIntegrity,
     SignatureStatusResponse,
@@ -43,8 +48,9 @@ from ..models.reports import (
     WorkerReportRequest,
 )
 from ..services.export_service import ExportService
-from ..services.integrity_service import IntegrityService
+from ..services.integrity_service import MONTHLY_DIGEST_VERSION, IntegrityService
 from ..services.report_service import ReportService
+from ..utils.timezones import resolve_worker_timezone
 from ..utils.worker_auth import _authenticate_worker, _verify_worker_company_access
 
 router = APIRouter()
@@ -81,7 +87,7 @@ async def get_company_monthly_report(
     company_id: str = Query(..., description="ID de la empresa"),
     year: int = Query(..., ge=2020, le=2035, description="Año del informe"),
     month: int = Query(..., ge=1, le=12, description="Mes del informe (1-12)"),
-    timezone: str = Query("Europe/Madrid", description="Zona horaria IANA para agrupar días"),
+    timezone: Annotated[IanaTimezone, Query(description="Zona horaria IANA para agrupar días")] = "Europe/Madrid",
     current_user: APIUser = Depends(PermissionChecker("view_reports")),
 ) -> CompanyMonthlySummary:
     """
@@ -112,7 +118,7 @@ async def get_worker_monthly_report(
     company_id: str = Query(..., description="ID de la empresa"),
     year: int = Query(..., ge=2020, le=2035, description="Año del informe"),
     month: int = Query(..., ge=1, le=12, description="Mes del informe (1-12)"),
-    timezone: str = Query("Europe/Madrid", description="Zona horaria IANA para agrupar días"),
+    timezone: Annotated[IanaTimezone, Query(description="Zona horaria IANA para agrupar días")] = "Europe/Madrid",
     current_user: APIUser = Depends(PermissionChecker("view_reports")),
 ) -> WorkerMonthlySummary:
     """
@@ -147,7 +153,7 @@ async def get_overtime_report(
         ge=0,
         description="Minutos de jornada diaria esperados (por defecto 480 = 8 h)",
     ),
-    timezone: str = Query("Europe/Madrid", description="Zona horaria IANA"),
+    timezone: Annotated[IanaTimezone, Query(description="Zona horaria IANA")] = "Europe/Madrid",
     current_user: APIUser = Depends(PermissionChecker("view_reports")),
 ) -> OvertimeReport:
     """
@@ -179,7 +185,7 @@ async def export_monthly_report(
     month: int = Query(..., ge=1, le=12, description="Mes del informe (1-12)"),
     worker_id: Optional[str] = Query(None, description="ID del trabajador (opcional; si se omite, exporta toda la empresa)"),
     format: ExportFormat = Query(ExportFormat.PDF, description="Formato de exportación: csv, xlsx o pdf"),
-    timezone: str = Query("Europe/Madrid", description="Zona horaria IANA"),
+    timezone: Annotated[IanaTimezone, Query(description="Zona horaria IANA")] = "Europe/Madrid",
     current_user: APIUser = Depends(PermissionChecker("export_reports")),
 ) -> StreamingResponse:
     """
@@ -261,7 +267,7 @@ async def export_overtime_report(
         ge=0,
         description="Minutos de jornada diaria esperados (por defecto 480 = 8 h)",
     ),
-    timezone: str = Query("Europe/Madrid", description="Zona horaria IANA"),
+    timezone: Annotated[IanaTimezone, Query(description="Zona horaria IANA")] = "Europe/Madrid",
     current_user: APIUser = Depends(PermissionChecker("export_reports")),
 ) -> StreamingResponse:
     """
@@ -360,6 +366,39 @@ async def verify_record_integrity(
     )
 
 
+@router.get(
+    "/reports/integrity/monthly-signature/{signature_id}",
+    response_model=MonthlySignatureVerification,
+    summary="Verificar la firma mensual contra su contenido",
+)
+async def verify_monthly_signature(
+    signature_id: str,
+    current_user: APIUser = Depends(PermissionChecker("view_reports")),
+) -> MonthlySignatureVerification:
+    """
+    Recalcula el digest del mes firmado y lo compara con el almacenado en la
+    firma mensual, devolviendo ``verified``, ``mismatch``, ``legacy`` o
+    ``unsupported_version`` (digest escrito por una versión del algoritmo que
+    este código no sabe recalcular; no se compara nada).
+
+    El periodo se delimita con la zona horaria persistida en la firma, y el
+    digest se recalcula sobre los valores actuales de los fichajes (nunca
+    sobre sus ``integrity_hash`` almacenados). En caso de ``mismatch`` se
+    adjuntan las correcciones aprobadas (change-requests) aplicadas después de
+    la firma, para distinguir una modificación auditada de una alteración
+    inexplicada. Las firmas anteriores a esta capacidad se reportan como
+    ``legacy``: nunca se rellena su digest.
+
+    Requiere permiso ``view_reports`` (admin o inspector).
+    """
+    logger.info(
+        "Monthly signature verification requested: signature=%s user=%s",
+        signature_id, current_user.username,
+    )
+    result = await IntegrityService.verify_monthly_signature(signature_id)
+    return MonthlySignatureVerification(**result)
+
+
 # ---------------------------------------------------------------------------
 # Worker endpoints (email + password authentication)
 # ---------------------------------------------------------------------------
@@ -379,12 +418,15 @@ async def get_worker_own_monthly_report(
     La autenticación se realiza con email y contraseña (sin JWT). El trabajador
     sólo puede consultar datos de empresas a las que pertenece.
 
-    El resumen incluye el desglose diario y el estado de firma del mes.
+    El resumen incluye el desglose diario y el estado de firma del mes. El mes
+    se delimita con la zona horaria de la ficha del trabajador (el ``timezone``
+    de la petición se ignora), de modo que coincide con el mes que se firma.
     """
     worker = await _authenticate_worker(request.email, request.password)
     _verify_worker_company_access(worker, request.company_id)
 
     worker_id = str(worker["_id"])
+    timezone = resolve_worker_timezone(worker)
     logger.info(
         "Worker self-report requested: worker=%s company=%s year=%d month=%d",
         worker_id, request.company_id, request.year, request.month,
@@ -395,6 +437,7 @@ async def get_worker_own_monthly_report(
         worker_id=worker_id,
         year=request.year,
         month=request.month,
+        timezone=timezone,
     )
 
 
@@ -410,8 +453,13 @@ async def sign_monthly_report(
     """
     Permite a un trabajador firmar digitalmente su registro mensual de jornada.
 
-    La firma registra el consentimiento del trabajador con los datos del mes
-    indicado. Si el mes ya fue firmado, devuelve un error 409.
+    La firma registra el consentimiento del trabajador sobre el contenido del
+    mes indicado: se calcula un digest SHA-256 del conjunto de fichajes (con la
+    ventana UTC de la zona horaria configurada en la ficha del trabajador, la
+    misma que delimita el informe que ha consultado) y se persiste junto a la
+    firma, de modo que pueda verificarse después. Si el mes ya fue firmado,
+    devuelve un error 409. Solo pueden firmarse meses ya cerrados: el mes en
+    curso o uno futuro se rechaza con un error 400.
 
     La autenticación se realiza con email y contraseña (sin JWT).
     """
@@ -419,6 +467,7 @@ async def sign_monthly_report(
     _verify_worker_company_access(worker, request.company_id)
 
     worker_id = str(worker["_id"])
+    already_signed_detail = f"El mes {request.month}/{request.year} ya fue firmado anteriormente"
 
     existing = await db.MonthlySignatures.find_one({
         "worker_id": worker_id,
@@ -429,25 +478,76 @@ async def sign_monthly_report(
     if existing:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"El mes {request.month}/{request.year} ya fue firmado anteriormente"
-            ),
+            detail=already_signed_detail,
         )
 
     signed_at = datetime.now(dt_timezone.utc)
+
+    # Bind the signature to the content it covers: digest of the month's
+    # records as they are right now, delimited by the timezone window the
+    # worker saw in their monthly report. The zone is resolved server-side from
+    # the worker's record, never from the request: otherwise two months signed
+    # from devices in different zones would leave a boundary punch covered by
+    # no signature at all.
+    timezone = resolve_worker_timezone(worker)
+
+    # Only closed months may be signed. A month still receiving punches is not
+    # stable enough to bind a digest to: a punch landing between reading the
+    # records below and inserting the signature would enter the month but not
+    # the digest, leaving a signature born in "mismatch" with no audited
+    # correction — indistinguishable from tampering (TOCTOU). The current and
+    # future months, evaluated in the worker's resolved zone, are rejected.
+    now_local = datetime.now(dt_timezone.utc).astimezone(pytz.timezone(timezone))
+    if (request.year, request.month) >= (now_local.year, now_local.month):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"El mes {request.month}/{request.year} todavía no ha terminado: "
+                "solo se pueden firmar meses ya cerrados"
+            ),
+        )
+
+    if request.timezone and request.timezone != timezone:
+        logger.debug(
+            "Sign request for worker %s carried timezone %s; month delimited with %s",
+            worker_id, request.timezone, timezone,
+        )
+
+    records = await IntegrityService.get_month_records(
+        worker_id=worker_id,
+        company_id=request.company_id,
+        year=request.year,
+        month=request.month,
+        timezone=timezone,
+    )
+    content_hash, record_count = IntegrityService.compute_month_digest(records)
+
     signature_doc = {
         "worker_id": worker_id,
         "company_id": request.company_id,
         "year": request.year,
         "month": request.month,
         "signed_at": signed_at,
+        "content_hash": content_hash,
+        "content_hash_version": MONTHLY_DIGEST_VERSION,
+        "record_count": record_count,
+        "timezone": timezone,
     }
 
-    result = await db.MonthlySignatures.insert_one(signature_doc)
+    try:
+        result = await db.MonthlySignatures.insert_one(signature_doc)
+    except DuplicateKeyError:
+        # Lost the race against a concurrent request (double tap on the confirm
+        # button): the unique index rejects the second insert, and the answer
+        # must be the documented 409, not a 500.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=already_signed_detail,
+        )
 
     logger.info(
-        "Monthly report signed: worker=%s company=%s year=%d month=%d",
-        worker_id, request.company_id, request.year, request.month,
+        "Monthly report signed: worker=%s company=%s year=%d month=%d records=%d hash=%s",
+        worker_id, request.company_id, request.year, request.month, record_count, content_hash,
     )
 
     return MonthlySignatureResponse(
@@ -458,6 +558,7 @@ async def sign_monthly_report(
         month=request.month,
         status="signed",
         signed_at=signed_at,
+        content_hash=content_hash,
     )
 
 
@@ -573,7 +674,9 @@ async def export_worker_own_monthly_report(
     Permite a un trabajador exportar su propio resumen mensual de jornada.
 
     La autenticación se realiza con email y contraseña (sin JWT). El trabajador
-    sólo puede exportar datos de empresas a las que pertenece.
+    sólo puede exportar datos de empresas a las que pertenece. El mes se
+    delimita con la zona horaria de la ficha del trabajador (el ``timezone`` de
+    la petición se ignora), igual que al consultar y al firmar.
 
     Cabeceros de respuesta:
 
@@ -584,6 +687,7 @@ async def export_worker_own_monthly_report(
     _verify_worker_company_access(worker, request.company_id)
 
     worker_id = str(worker["_id"])
+    timezone = resolve_worker_timezone(worker)
     logger.info(
         "Worker self-export requested: worker=%s company=%s year=%d month=%d format=%s",
         worker_id, request.company_id, request.year, request.month, request.format,
@@ -594,16 +698,16 @@ async def export_worker_own_monthly_report(
         worker_id=worker_id,
         year=request.year,
         month=request.month,
-        timezone=request.timezone,
+        timezone=timezone,
     )
 
     export_service = ExportService()
     if request.format == "csv":
-        buf: io.BytesIO = await export_service.export_monthly_csv(summary, timezone=request.timezone)
+        buf: io.BytesIO = await export_service.export_monthly_csv(summary, timezone=timezone)
         media_type = "text/csv"
         ext = "csv"
     else:
-        buf = await export_service.export_monthly_pdf(summary, timezone=request.timezone)
+        buf = await export_service.export_monthly_pdf(summary, timezone=timezone)
         media_type = "application/pdf"
         ext = "pdf"
 
