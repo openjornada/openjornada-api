@@ -329,6 +329,11 @@ class TestRealtimeNotifications:
                 headers=tracker_headers,
             )
             assert resp.status_code == 403, resp.text
+
+            resp = await async_client.post(
+                "/api/notifications/mark-all-read", headers=tracker_headers
+            )
+            assert resp.status_code == 403, resp.text
         finally:
             await test_db.APIUsers.delete_one({"email": "tracker@test.com"})
 
@@ -591,3 +596,40 @@ class TestFichajeEventTotals:
             assert payload["monthly_total_minutes"] is None
         finally:
             await _cleanup(test_db, company_id, worker_id)
+
+    @pytest.mark.asyncio
+    async def test_mark_all_read_covers_more_than_list_limit(
+        self, async_client: AsyncClient, admin_headers: Dict[str, str], test_db
+    ):
+        """mark-all-read marca TODAS las no leídas (no solo las NOTIFICATIONS_LIST_LIMIT visibles)."""
+        company_id = "mark-all-test-company"
+        try:
+            # Vaciamos restos no leídos de otros tests de la BD compartida.
+            resp = await async_client.post(
+                "/api/notifications/mark-all-read", headers=admin_headers
+            )
+            assert resp.status_code == 200, resp.text
+
+            await test_db.notifications.insert_many([
+                {
+                    "type": "fichaje.created",
+                    "company_id": company_id,
+                    "payload": {"n": i},
+                    "target_role": None,
+                    "read": False,
+                    "created_at": datetime.now(dt_timezone.utc),
+                }
+                for i in range(60)
+            ])
+
+            resp = await async_client.post(
+                "/api/notifications/mark-all-read", headers=admin_headers
+            )
+            assert resp.status_code == 200, resp.text
+            assert resp.json()["updated"] == 60
+
+            resp = await async_client.get("/api/notifications", headers=admin_headers)
+            assert resp.json()["unread_count"] == 0
+        finally:
+            await test_db.notifications.delete_many({"company_id": company_id})
+            await test_db.APIUsers.delete_one({"email": "admin@test.com"})

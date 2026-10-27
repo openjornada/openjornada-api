@@ -7,7 +7,8 @@ alcance es el tenant completo (cada tenant = su propia BD/proceso): los admins
 ven todas las notificaciones de su tenant, coherente con
 `view_all_time_records`. `mark-read` consulta por `_id` DENTRO de la BD del
 tenant: es imposible marcar una notificación de otro tenant; los ids
-inexistentes o inválidos se ignoran.
+inexistentes o inválidos se ignoran. `mark-all-read` marca TODAS las no leídas
+del tenant (sin ids).
 """
 import logging
 from datetime import datetime, timezone
@@ -79,4 +80,13 @@ async def mark_read(
         {"_id": {"$in": object_ids}},
         {"$set": {"read": True}},
     )
+    return MarkReadResponse(updated=result.modified_count)
+
+
+@router.post("/notifications/mark-all-read", response_model=MarkReadResponse)
+async def mark_all_read(
+    current_user: APIUser = Depends(PermissionChecker("view_all_time_records")),
+):
+    """Marca como leídas TODAS las notificaciones no leídas del tenant."""
+    result = await db.notifications.update_many({"read": False}, {"$set": {"read": True}})
     return MarkReadResponse(updated=result.modified_count)
