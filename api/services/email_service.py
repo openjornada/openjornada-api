@@ -64,6 +64,11 @@ _EMAIL_SUBJECTS = {
         "en": "Your absence request has been rejected - {app_name}",
         "ca": "La teva sol·licitud d'absència ha estat rebutjada - {app_name}",
     },
+    "shift_plan_published": {
+        "es": "Nuevo cuadrante de turnos publicado - {app_name}",
+        "en": "New shift roster published - {app_name}",
+        "ca": "Nou quadrant de torns publicat - {app_name}",
+    },
 }
 
 
@@ -676,6 +681,80 @@ class EmailService:
 
         except Exception as e:
             logger.error(f"[EMAIL] Error preparing absence approval email: {e}")
+            import traceback
+            logger.error(f"[EMAIL] Traceback: {traceback.format_exc()}")
+            return False
+
+    async def send_shift_plan_published_email(
+        self,
+        to_email: str,
+        worker_name: str,
+        company_name: str,
+        days: list,
+        start_date: str,
+        end_date: str,
+        contact_email: str,
+        locale: str = 'es'
+    ) -> bool:
+        """
+        Send "your shift roster was published" email to one affected worker.
+
+        Args:
+            to_email: Worker's email address
+            worker_name: Worker's first name
+            company_name: Company the roster belongs to
+            days: Published shifts of the range as [{"date": "YYYY-MM-DD", "shifts": [CellShift]}]
+            start_date: First day of the published range (ISO string)
+            end_date: Last day of the published range (ISO string)
+            contact_email: Contact email for support
+            locale: Language code for email template (default: 'es')
+
+        Returns:
+            True if sent successfully, False otherwise
+        """
+        logger.info(f"[EMAIL] send_shift_plan_published_email called for: {to_email}")
+
+        try:
+            def _display(iso_date: str) -> str:
+                # Dates arrive as "YYYY-MM-DD" strings: format for reading
+                return f"{iso_date[8:10]}/{iso_date[5:7]}/{iso_date[0:4]}"
+
+            html_body, text_body = email_renderer.render(
+                template_name='shift_plan_published.html',
+                context={
+                    'app_name': self.app_name,
+                    'worker_name': worker_name,
+                    'company_name': company_name,
+                    'start_date': _display(start_date),
+                    'end_date': _display(end_date),
+                    'days': [
+                        {
+                            'date': _display(day['date']),
+                            'shifts': day.get('shifts') or [],
+                        }
+                        for day in days
+                    ],
+                    'contact_email': contact_email
+                },
+                locale=locale
+            )
+
+            subject = _localized_subject("shift_plan_published", locale, self.app_name)
+
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                self._executor,
+                self._send_email_sync,
+                to_email,
+                subject,
+                text_body,
+                html_body
+            )
+            logger.info(f"[EMAIL] Shift plan publication email send result: {result}")
+            return result
+
+        except Exception as e:
+            logger.error(f"[EMAIL] Error preparing shift plan publication email: {e}")
             import traceback
             logger.error(f"[EMAIL] Traceback: {traceback.format_exc()}")
             return False

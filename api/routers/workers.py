@@ -8,6 +8,7 @@ import re
 import secrets
 import logging
 import anyio
+import pytz
 
 from ..models.workers import (
     WorkerModel,
@@ -42,6 +43,7 @@ from ..auth.subscription_guard import require_active_subscription
 from ..services.email_service import email_service
 from ..utils.company_locale import resolve_company_locale
 from ..utils.errors import raise_api_error
+from ..utils.timezones import resolve_worker_timezone
 from ..utils.worker_auth import _authenticate_worker
 
 router = APIRouter()
@@ -817,6 +819,12 @@ async def delete_worker(
     # jornada that would block the state machine.
     await db.WorkerShiftStates.delete_many({"worker_id": worker_id})
 
+    # Shift planning: future planned shifts are pointless once the worker is
+    # gone; past cells stay for history (spec).
+    await db.PlannedShifts.delete_many(
+        {"worker_id": worker_id, "date": {"$gt": datetime.now(pytz.timezone(resolve_worker_timezone(worker))).date().isoformat()}}
+    )
+
     return None
 
 @router.patch("/workers/change-password", status_code=status.HTTP_200_OK)
@@ -1176,6 +1184,7 @@ async def get_worker_companies(
                         "created_at": company.get("created_at"),
                         "updated_at": company.get("updated_at"),
                         "absence_management_enabled": company.get("absence_management_enabled", False),
+                        "shift_planning_enabled": company.get("shift_planning_enabled", False),
                         # Raw fields so the webapp can resolve its UI locale:
                         # worker.language ?? notification_language ?? navegador ?? es
                         "notification_language": resolve_notification_locale(company)

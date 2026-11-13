@@ -20,6 +20,7 @@ class CompanyUpdate(BaseModel):
     """Model for updating a company"""
     name: Optional[str] = Field(None, min_length=1, max_length=200)
     absence_management_enabled: Optional[bool] = None
+    shift_planning_enabled: Optional[bool] = None
     notification_language: Optional[SupportedLocale] = None
 
 class Company(CompanyBase):
@@ -29,6 +30,7 @@ class Company(CompanyBase):
     deleted_at: Optional[datetime] = None
     deleted_by: Optional[str] = None
     absence_management_enabled: bool = False
+    shift_planning_enabled: bool = False
 
 class CompanyResponse(CompanyBase):
     """Model for company API responses"""
@@ -39,3 +41,4 @@ class CompanyResponse(CompanyBase):
     deleted_by: Optional[str] = None
     sms_config: Optional[SmsCompanyConfig] = None
     absence_management_enabled: bool = False
+    shift_planning_enabled: bool = False

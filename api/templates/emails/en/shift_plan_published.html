@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Shift roster published</h2>
+<p>Hello {{ worker_name }},</p>
+<p>A new shift roster has been published for <strong>{{ company_name }}</strong> covering {{ start_date }} - {{ end_date }}. Your published shifts for this period:</p>
+
+<div style="background-color: #eef2ff; padding: 15px; margin: 20px 0; border-left: 4px solid #6366f1;">
+    <ul style="list-style: none; padding-left: 0;">
+        {% for day in days %}
+        <li style="margin-bottom: 12px;">
+            <strong>{{ day.date }}</strong>
+            <ul style="margin: 4px 0;">
+                {% for shift in day.shifts %}
+                <li>
+                    {{ shift.start_time }} - {{ shift.end_time }}
+                    {%- if shift.name %} · {{ shift.name }}{% endif %}
+                    {%- if shift.break_minutes %} (break {{ shift.break_minutes }} min){% endif %}
+                </li>
+                {% else %}
+                <li>No shifts</li>
+                {% endfor %}
+            </ul>
+        </li>
+        {% endfor %}
+    </ul>
+</div>
+
+<p>You can check your published roster anytime in the worker app.</p>
+
+<p>If you have any questions, please contact your administrator or write to {{ contact_email }}.</p>
+{% endblock %}

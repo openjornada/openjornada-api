@@ -43,7 +43,10 @@ ROLE_PERMISSIONS = {
         "view_absences",
         "create_absences",
         "manage_absences",
-        "manage_absence_policies"
+        "manage_absence_policies",
+        "view_shift_plans",
+        "manage_shift_plans",
+        "view_own_shift_plans"
     ],
     "inspector": [
         "view_reports",
@@ -55,7 +58,8 @@ ROLE_PERMISSIONS = {
         "create_time_records",
         "create_change_requests",
         "view_pause_types",
-        "create_absences"
+        "create_absences",
+        "view_own_shift_plans"
     ]
 }
 

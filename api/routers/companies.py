@@ -42,6 +42,7 @@ async def create_company(
     company_data["deleted_at"] = None
     company_data["deleted_by"] = None
     company_data["absence_management_enabled"] = False
+    company_data["shift_planning_enabled"] = False
 
     try:
         result = await db.Companies.insert_one(company_data)

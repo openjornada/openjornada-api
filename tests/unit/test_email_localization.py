@@ -41,6 +41,15 @@ _CONTEXT = {
     "reason": "me equivoqué",
     "admin_url": "https://admin.example.com",
     "webapp_url": "https://app.example.com",
+    "days": [
+        {
+            "date": "05/01/2026",
+            "shifts": [
+                {"start_time": "06:00", "end_time": "14:00", "name": "Mañana", "break_minutes": 30},
+            ],
+        },
+        {"date": "06/01/2026", "shifts": []},
+    ],
 }
 
 _ALL_TEMPLATES = [
@@ -52,6 +61,7 @@ _ALL_TEMPLATES = [
     "absence_rejected.html",
     "change_request_accepted.html",
     "change_request_rejected.html",
+    "shift_plan_published.html",
 ]
 
 

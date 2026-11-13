@@ -25,6 +25,7 @@ Backend API for the OpenJornada system, built with FastAPI and MongoDB.
 - **Monthly Worker Signature**: Digital signature of monthly records by the worker
 - **SMS Reminders**: Automatic SMS sending to workers who forget to clock out (LabsMobile provider)
 - **Absence and Leave Management**: Optional per-company module (`absence_management_enabled`) with configurable policy (days/year, working-day or calendar-day accrual, absence types, notice period, half-day/hours, blackout periods, max overlap), single-level request and approval with audit trail and atomic transition, on-the-fly balance, supporting documents in GridFS, validation (overlaps, blackout, balance) and integration with the monthly report (approved days do not count as missing work time). Endpoints `/api/absences` and `/api/absence-policies`
+- **Shift Planning**: Optional per-company module (`shift_planning_enabled`) with shift types, a weekly roster edited per cell (draft), publication by range with pending-change tracking, non-blocking warnings (rest under 12 h, approved absence), copy of the previous week, email to affected workers (es/en/ca) and a worker view of their published shifts. Endpoints `/api/shift-types` and `/api/shift-plans`
 
 ## 📋 Requirements
 
@@ -408,6 +409,19 @@ clock-out events (open shifts contribute no minutes) and honor the `timezone` pa
 - `POST /api/absences/me/calendar` - Team calendar (without type/reason)
 - `POST /api/absences/me/types` - Company type catalog
 - `POST /api/absences/attachments` - Upload supporting document (multipart) → `attachment_id`
+
+### Shift Planning (Admin only; module enabled per company)
+- `GET /api/shift-types?company_id=` - List shift types
+- `POST /api/shift-types` - Create type
+- `PUT /api/shift-types/{id}?company_id=` - Edit type
+- `DELETE /api/shift-types/{id}?company_id=` - Delete type (logical)
+- `GET /api/shift-plans?company_id=&start_date=&end_date=[&work_center_id=]` - Roster (max 42 days)
+- `PUT /api/shift-plans/cell` - Replace the shifts of a worker/day cell (draft)
+- `POST /api/shift-plans/copy-week` - Copy a week (`skip` | `overwrite`)
+- `POST /api/shift-plans/publish` - Publish a range (`notify`, `acknowledge_warnings`)
+
+### Shift Planning (Worker - Request-based auth)
+- `POST /api/shift-plans/me` - Own published shifts in a date range
 
 ## 💾 Backup System
 

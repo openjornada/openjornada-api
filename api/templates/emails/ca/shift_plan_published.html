@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Quadrant de torns publicat</h2>
+<p>Hola {{ worker_name }},</p>
+<p>S'ha publicat un nou quadrant de torns per a <strong>{{ company_name }}</strong> en el període {{ start_date }} - {{ end_date }}. Els teus torns publicats d'aquest període:</p>
+
+<div style="background-color: #eef2ff; padding: 15px; margin: 20px 0; border-left: 4px solid #6366f1;">
+    <ul style="list-style: none; padding-left: 0;">
+        {% for day in days %}
+        <li style="margin-bottom: 12px;">
+            <strong>{{ day.date }}</strong>
+            <ul style="margin: 4px 0;">
+                {% for shift in day.shifts %}
+                <li>
+                    {{ shift.start_time }} - {{ shift.end_time }}
+                    {%- if shift.name %} · {{ shift.name }}{% endif %}
+                    {%- if shift.break_minutes %} (descans {{ shift.break_minutes }} min){% endif %}
+                </li>
+                {% else %}
+                <li>Sense torns</li>
+                {% endfor %}
+            </ul>
+        </li>
+        {% endfor %}
+    </ul>
+</div>
+
+<p>Podeu consultar sempre el vostre quadrant publicat a l'app del treballador.</p>
+
+<p>Si teniu cap dubte, si us plau contacteu amb el vostre administrador o escriviu a {{ contact_email }}.</p>
+{% endblock %}

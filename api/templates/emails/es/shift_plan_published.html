@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Cuadrante de turnos publicado</h2>
+<p>Hola {{ worker_name }},</p>
+<p>Se ha publicado un nuevo cuadrante de turnos para <strong>{{ company_name }}</strong> en el periodo {{ start_date }} - {{ end_date }}. Tus turnos publicados de este periodo:</p>
+
+<div style="background-color: #eef2ff; padding: 15px; margin: 20px 0; border-left: 4px solid #6366f1;">
+    <ul style="list-style: none; padding-left: 0;">
+        {% for day in days %}
+        <li style="margin-bottom: 12px;">
+            <strong>{{ day.date }}</strong>
+            <ul style="margin: 4px 0;">
+                {% for shift in day.shifts %}
+                <li>
+                    {{ shift.start_time }} - {{ shift.end_time }}
+                    {%- if shift.name %} · {{ shift.name }}{% endif %}
+                    {%- if shift.break_minutes %} (descanso {{ shift.break_minutes }} min){% endif %}
+                </li>
+                {% else %}
+                <li>Sin turnos</li>
+                {% endfor %}
+            </ul>
+        </li>
+        {% endfor %}
+    </ul>
+</div>
+
+<p>Puedes consultar siempre tu cuadrante publicado en la app del trabajador.</p>
+
+<p>Si tienes alguna duda, por favor contacta con tu administrador o escribe a {{ contact_email }}.</p>
+{% endblock %}

@@ -25,6 +25,7 @@ Backend API para el sistema OpenJornada, construido con FastAPI y MongoDB.
 - **Firma Mensual de Trabajadores**: Firma digital de registros mensuales por el trabajador
 - **Recordatorios SMS**: Envío automático de SMS a trabajadores que olvidan fichar la salida (proveedor LabsMobile)
 - **Gestión de Ausencias y Vacaciones**: Módulo opcional por empresa (`absence_management_enabled`) con política configurable (días/año, cómputo laborable o natural, tipos de ausencia, antelación, medio día/horas, periodos bloqueados, máximo de solapamiento), solicitud y aprobación de un nivel con auditoría y transición atómica, saldo calculado al vuelo, justificantes en GridFS, validación (solapamientos, blackout, saldo) e integración con el informe mensual (los días aprobados no cuentan como jornada faltante). Endpoints `/api/absences` y `/api/absence-policies`
+- **Planificación de Turnos**: Módulo opcional por empresa (`shift_planning_enabled`) con tipos de turno, cuadrante semanal editable por celda (borrador), publicación por rango con control de cambios pendientes, avisos no bloqueantes (descanso inferior a 12 h, ausencia aprobada), copia de la semana anterior, correo a los trabajadores afectados (es/en/ca) y consulta del trabajador de sus turnos publicados. Endpoints `/api/shift-types` y `/api/shift-plans`
 
 ## 📋 Requisitos
 
@@ -412,6 +413,19 @@ partir de los eventos de salida (los turnos abiertos no aportan minutos) y respe
 - `POST /api/absences/me/calendar` - Calendario de equipo (sin tipo/motivo)
 - `POST /api/absences/me/types` - Catálogo de tipos de la empresa
 - `POST /api/absences/attachments` - Subir justificante (multipart) → `attachment_id`
+
+### Planificación de Turnos (Admin; módulo activo por empresa)
+- `GET /api/shift-types?company_id=` - Listar tipos de turno
+- `POST /api/shift-types` - Crear tipo
+- `PUT /api/shift-types/{id}?company_id=` - Editar tipo
+- `DELETE /api/shift-types/{id}?company_id=` - Eliminar tipo (borrado lógico)
+- `GET /api/shift-plans?company_id=&start_date=&end_date=[&work_center_id=]` - Cuadrante (máx. 42 días)
+- `PUT /api/shift-plans/cell` - Reemplazar los turnos de una celda trabajador/día (borrador)
+- `POST /api/shift-plans/copy-week` - Copiar una semana (`skip` | `overwrite`)
+- `POST /api/shift-plans/publish` - Publicar un rango (`notify`, `acknowledge_warnings`)
+
+### Planificación de Turnos (Trabajador - Auth en la petición)
+- `POST /api/shift-plans/me` - Turnos publicados propios en un rango de fechas
 
 ## 💾 Sistema de Backups
 

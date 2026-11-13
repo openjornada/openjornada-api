@@ -90,6 +90,12 @@ async def init_db():
 
         # Create index for AbsencePolicies (exactly one policy per company)
         await db.AbsencePolicies.create_index("company_id", unique=True)
+
+        # Create indexes for Shift Planning (optional module)
+        await db.ShiftTypes.create_index("company_id")
+        await db.PlannedShifts.create_index([("company_id", 1), ("date", 1)])
+        await db.PlannedShifts.create_index([("worker_id", 1), ("company_id", 1), ("date", 1)])
+        await db.ShiftPlanPublications.create_index([("company_id", 1), ("published_at", -1)])
         # Indexes for Notifications (real-time outbox).
         # NOTA: los antiguos índices con prefijo company_id (company_id_created_at,
         # company_id_read) están obsoletos; pueden borrarse a mano en despliegues
