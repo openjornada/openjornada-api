@@ -22,6 +22,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from bson.objectid import ObjectId
 from fastapi import status
+from pymongo.errors import DuplicateKeyError
 
 from ..database import db
 from ..utils.errors import raise_api_error
@@ -224,17 +225,24 @@ async def store_cell(company_id: str, worker_id: str, day: str, shifts: List[dic
         return []
 
     if existing is None:
-        await db.PlannedShifts.insert_one(
-            {
-                "company_id": company_id,
-                "worker_id": worker_id,
-                "date": day,
-                "shifts": shifts,
-                "published": None,
-                "removed": False,
-                "updated_at": now,
-            }
-        )
+        try:
+            await db.PlannedShifts.insert_one(
+                {
+                    "company_id": company_id,
+                    "worker_id": worker_id,
+                    "date": day,
+                    "shifts": shifts,
+                    "published": None,
+                    "removed": False,
+                    "updated_at": now,
+                }
+            )
+        except DuplicateKeyError:
+            # Unique (worker, company, date): the other writer won the insert.
+            await db.PlannedShifts.update_one(
+                {"company_id": company_id, "worker_id": worker_id, "date": day},
+                {"$set": {"shifts": shifts, "removed": False, "updated_at": now}},
+            )
     else:
         await db.PlannedShifts.update_one(
             {"_id": existing["_id"]},

@@ -406,6 +406,36 @@ class TestWriteCell:
         assert doc["removed"] is True
         assert doc["published"] == published  # worker still sees it until publish
 
+    async def test_store_cell_updates_when_insert_races(self, fake_db, monkeypatch):
+        from pymongo.errors import DuplicateKeyError
+
+        winner_id = ObjectId()
+        calls = {"n": 0}
+        real_find = fake_db.PlannedShifts.find_one
+
+        async def find_one(query=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return None
+            return await real_find(query)
+
+        async def insert_one(doc):
+            fake_db.PlannedShifts.docs.append(
+                {"_id": winner_id, "company_id": COMPANY, "worker_id": WORKER,
+                 "date": "2026-11-02", "shifts": [_stored("T", "15:00", "22:00")],
+                 "published": [_stored("T", "15:00", "22:00")], "removed": False}
+            )
+            raise DuplicateKeyError("dup")
+
+        monkeypatch.setattr(fake_db.PlannedShifts, "find_one", find_one)
+        monkeypatch.setattr(fake_db.PlannedShifts, "insert_one", insert_one)
+        await shift_planning.store_cell(COMPANY, WORKER, "2026-11-02", [_stored("M", "06:00", "14:00")])
+        assert len(fake_db.PlannedShifts.docs) == 1
+        doc = fake_db.PlannedShifts.docs[0]
+        assert doc["_id"] == winner_id
+        assert doc["shifts"][0]["name"] == "M"
+        assert doc["published"][0]["name"] == "T"
+
 
 # ---------------------------------------------------------------------------
 # Warnings (task 2.3)
