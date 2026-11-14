@@ -439,6 +439,38 @@ def _affected_workers(changes: List[dict]) -> Dict[str, List[str]]:
     return {wid: sorted(days) for wid, days in by_worker.items()}
 
 
+async def _apply_changes(company_id: str, changes: List[dict]) -> None:
+    """Write a publication's planned changes. Safe to run again."""
+    for change in changes:
+        query = {
+            "company_id": company_id,
+            "worker_id": change["worker_id"],
+            "date": change["date"],
+        }
+        if change["after"]:
+            await db.PlannedShifts.update_one(
+                query,
+                {"$set": {"published": change["after"], "removed": False}},
+            )
+        else:
+            await db.PlannedShifts.delete_one(query)
+
+
+async def finish_pending_publications(company_id: Optional[str] = None) -> List[dict]:
+    """Finish publications left with ``applied: false`` after a crash."""
+    query: dict = {"applied": False}
+    if company_id is not None:
+        query["company_id"] = company_id
+    pending = await db.ShiftPlanPublications.find(query).to_list(length=None)
+    for pub in pending:
+        await _apply_changes(pub["company_id"], pub.get("changes") or [])
+        await db.ShiftPlanPublications.update_one(
+            {"_id": pub["_id"]},
+            {"$set": {"applied": True}},
+        )
+    return pending
+
+
 async def publish(
     company_id: str,
     start_date: str,
@@ -450,12 +482,18 @@ async def publish(
     """
     Apply drafts to the published view for the whole company in the range.
 
+    The publication row is inserted with ``applied: false`` before any cell
+    write. A crash mid-way is finished by the next publish of that company or
+    by startup. A retry of the same range with nothing new left returns that
+    row so the caller can still send the email.
+
     Returns ``{publication_id, changed_cells, changes}``; when there was
     nothing to publish, ``publication_id`` is None (spec: no record, no
     emails). Raises ``shift_plan.warnings_not_acknowledged`` when the range
     has warnings and they were not confirmed.
     """
     check_range(start_date, end_date)
+    recovered = await finish_pending_publications(company_id)
 
     warnings = await compute_range_warnings(company_id, start_date, end_date)
     if warnings and not acknowledge_warnings:
@@ -470,7 +508,6 @@ async def publish(
     ).to_list(length=None)
 
     changes: List[dict] = []
-    to_delete = []
     for doc in docs:
         draft = doc.get("shifts", [])
         published_before = doc.get("published") or []
@@ -479,15 +516,20 @@ async def publish(
         changes.append(
             {"worker_id": doc["worker_id"], "date": doc["date"], "before": published_before, "after": draft}
         )
-        if not draft:
-            to_delete.append(doc["_id"])
-        else:
-            await db.PlannedShifts.update_one(
-                {"_id": doc["_id"]},
-                {"$set": {"published": draft, "removed": False}},
-            )
 
     if not changes:
+        same = [
+            pub for pub in recovered
+            if pub.get("start_date") == start_date and pub.get("end_date") == end_date
+        ]
+        if same:
+            pub = same[-1]
+            done = pub.get("changes") or []
+            return {
+                "publication_id": str(pub["_id"]),
+                "changed_cells": len(done),
+                "changes": done,
+            }
         return {"publication_id": None, "changed_cells": 0, "changes": []}
 
     publication = {
@@ -498,13 +540,16 @@ async def publish(
         "published_by": published_by,
         # Decided before inserting: the record is immutable once created
         "notified": notify,
+        "applied": False,
         "changes": changes,
         "acknowledged_warnings": warnings if acknowledge_warnings else [],
     }
     result = await db.ShiftPlanPublications.insert_one(publication)
-
-    for oid in to_delete:
-        await db.PlannedShifts.delete_one({"_id": oid})
+    await _apply_changes(company_id, changes)
+    await db.ShiftPlanPublications.update_one(
+        {"_id": result.inserted_id},
+        {"$set": {"applied": True}},
+    )
 
     return {
         "publication_id": str(result.inserted_id),

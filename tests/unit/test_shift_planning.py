@@ -581,6 +581,7 @@ class TestPublish:
         assert doc["published"] == doc["shifts"]
         pub = fake_db.ShiftPlanPublications.docs[0]
         assert pub["notified"] is True
+        assert pub["applied"] is True
         assert pub["changes"][0]["before"] == []
         assert pub["published_by"] == "admin"
 
@@ -651,6 +652,31 @@ class TestPublish:
                                               acknowledge_warnings=False, notify=False,
                                               published_by="admin")
         assert result["changed_cells"] == 1
+
+    async def test_retry_finishes_unapplied_publication(self, fake_db):
+        shifts = [_stored("M", "06:00", "14:00")]
+        await self._cell(fake_db, "2026-11-02", shifts)
+        pending_id = ObjectId()
+        fake_db.ShiftPlanPublications.docs.append({
+            "_id": pending_id,
+            "company_id": COMPANY,
+            "start_date": "2026-11-02",
+            "end_date": "2026-11-02",
+            "notified": True,
+            "applied": False,
+            "changes": [{
+                "worker_id": WORKER, "date": "2026-11-02", "before": [], "after": shifts,
+            }],
+        })
+        result = await shift_planning.publish(
+            COMPANY, "2026-11-02", "2026-11-02",
+            acknowledge_warnings=False, notify=True, published_by="admin",
+        )
+        assert result["publication_id"] == str(pending_id)
+        assert result["changed_cells"] == 1
+        assert fake_db.PlannedShifts.docs[0]["published"] == shifts
+        assert fake_db.ShiftPlanPublications.docs[0]["applied"] is True
+        assert len(fake_db.ShiftPlanPublications.docs) == 1
 
 
 # ---------------------------------------------------------------------------
