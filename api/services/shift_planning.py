@@ -215,7 +215,8 @@ async def write_cell(
     deleted; published ones are marked ``removed`` (the worker keeps seeing
     the published version until the next publish). Returns the stored shifts.
     """
-    await ensure_worker_in_company(company_id, worker_id)
+    worker = await ensure_worker_in_company(company_id, worker_id)
+    worker_id = str(worker["_id"])
     shifts = await resolve_cell_items(company_id, items)
     await ensure_no_overlap(company_id, worker_id, day, shifts)
     return await store_cell(company_id, worker_id, day, shifts)

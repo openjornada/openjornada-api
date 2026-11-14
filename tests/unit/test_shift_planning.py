@@ -290,6 +290,40 @@ class TestWriteCell:
         doc = fake_db.PlannedShifts.docs[0]
         assert doc["published"] is None and doc["removed"] is False
 
+    async def test_worker_id_stored_as_on_the_worker(self, fake_db):
+        oid = ObjectId(WORKER)
+        fake_db.Workers.docs.append(active_worker(worker_id=oid))
+        await shift_planning.write_cell(
+            COMPANY, WORKER.upper(), "2026-11-02", [item(shift_type_id=None, start_time="08:00", end_time="14:00")]
+        )
+        assert fake_db.PlannedShifts.docs[0]["worker_id"] == str(oid)
+        fake_db.PlannedShifts.docs.append(
+            {
+                "_id": ObjectId(),
+                "company_id": COMPANY,
+                "worker_id": str(oid),
+                "date": "2026-11-01",
+                "shifts": [
+                    {
+                        "shift_type_id": None,
+                        "name": None,
+                        "short_code": None,
+                        "color": None,
+                        "start_time": "22:00",
+                        "end_time": "06:00",
+                        "break_minutes": 0,
+                    }
+                ],
+                "published": None,
+                "removed": False,
+            }
+        )
+        with pytest.raises(HTTPException) as exc:
+            await shift_planning.write_cell(
+                COMPANY, WORKER.upper(), "2026-11-02", [item(shift_type_id=None, start_time="05:00", end_time="13:00")]
+            )
+        assert exc.value.detail["error_code"] == "shift_plan.overlap"
+
     async def test_worker_not_in_company_rejected(self, fake_db):
         fake_db.Workers.docs.append(active_worker(company_id="665f00000000000000000099"))
         with pytest.raises(HTTPException) as exc:
