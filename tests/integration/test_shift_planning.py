@@ -452,12 +452,23 @@ class TestWorkerLifecycle:
         shift = [{"start_time": "08:00", "end_time": "16:00"}]
         await _cell(async_client, admin_headers, cid, wid, "2020-01-06", shift)
         await _cell(async_client, admin_headers, cid, wid, D1, shift)
+        await test_db.ShiftPlanPublications.insert_one({
+            "company_id": cid,
+            "changes": [
+                {"worker_id": wid, "date": "2020-01-06", "before": [], "after": shift},
+                {"worker_id": "other-worker", "date": "2020-01-06", "before": [], "after": shift},
+            ],
+        })
         # Called directly: no role in the system holds `manage_workers`
         # (pre-existing), so the HTTP route is unreachable in tests.
-        from api.routers.gdpr import AnonymizeRequest, anonymize_worker_data
+        from api.routers.gdpr import AnonymizeRequest, anonymize_worker_data, export_worker_data
 
+        exported = await export_worker_data(wid, _=None)
+        assert len(exported.planned_shifts) == 2
         await anonymize_worker_data(wid, AnonymizeRequest(reason="Solicitud del trabajador"), _=None)
         assert await test_db.PlannedShifts.count_documents({"worker_id": wid}) == 0
+        pub = await test_db.ShiftPlanPublications.find_one({"company_id": cid})
+        assert [c["worker_id"] for c in pub["changes"]] == ["other-worker"]
         # Anonymized workers break the shared workers listing in other tests
         from bson import ObjectId
         await test_db.Workers.delete_one({"_id": ObjectId(wid)})

@@ -59,12 +59,21 @@ class ChangeRequestGDPR(BaseModel):
     created_at: str
 
 
+class PlannedShiftGDPR(BaseModel):
+    id: str
+    company_id: str
+    date: str
+    shifts: List[dict]
+    published: Optional[List[dict]] = None
+
+
 class GDPRExportResponse(BaseModel):
     export_date: str
     worker: WorkerGDPRData
     time_records: List[TimeRecordGDPR]
     incidents: List[IncidentGDPR]
     change_requests: List[ChangeRequestGDPR]
+    planned_shifts: List[PlannedShiftGDPR]
 
 
 class AnonymizeRequest(BaseModel):
@@ -155,6 +164,18 @@ async def export_worker_data(
             created_at=cr.get("created_at", "").isoformat() if isinstance(cr.get("created_at"), datetime) else str(cr.get("created_at", ""))
         ))
 
+    planned_docs = await db.PlannedShifts.find({"worker_id": worker_id}).to_list(length=10000)
+    planned_shifts_data = [
+        PlannedShiftGDPR(
+            id=str(doc["_id"]),
+            company_id=doc.get("company_id", ""),
+            date=doc.get("date", ""),
+            shifts=doc.get("shifts") or [],
+            published=doc.get("published"),
+        )
+        for doc in planned_docs
+    ]
+
     # Build response
     worker_data = WorkerGDPRData(
         id=str(worker["_id"]),
@@ -172,7 +193,8 @@ async def export_worker_data(
         worker=worker_data,
         time_records=time_records_data,
         incidents=incidents_data,
-        change_requests=change_requests_data
+        change_requests=change_requests_data,
+        planned_shifts=planned_shifts_data,
     )
 
 
@@ -285,8 +307,12 @@ async def anonymize_worker_data(
     # delete_many because a worker may have docs across multiple companies.
     await db.WorkerShiftStates.delete_many({"worker_id": worker_id})
 
-    # Shift planning: every planned shift goes with anonymization (spec).
+    # Shift planning: cells go, and so does this worker's row in the publish log.
     await db.PlannedShifts.delete_many({"worker_id": worker_id})
+    await db.ShiftPlanPublications.update_many(
+        {"changes.worker_id": worker_id},
+        {"$pull": {"changes": {"worker_id": worker_id}}},
+    )
 
     return AnonymizeResponse(
         message="Datos del trabajador anonimizados correctamente. Los registros de jornada se conservan de forma anónima según la obligación legal de 4 años.",
