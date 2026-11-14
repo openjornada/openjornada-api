@@ -595,6 +595,27 @@ class TestPublish:
         pub = fake_db.ShiftPlanPublications.docs[0]
         assert [w["code"] for w in pub["acknowledged_warnings"]] == ["rest_under_12h"]
 
+    async def test_rest_warning_uses_published_day_before_range(self, fake_db):
+        fake_db.PlannedShifts.docs.append(
+            {"_id": ObjectId(), "company_id": COMPANY, "worker_id": WORKER,
+             "date": "2026-11-02", "shifts": [],
+             "published": [_stored("N", "22:00", "06:00")], "removed": True}
+        )
+        await self._cell(fake_db, "2026-11-03", [_stored("M", "08:00", "16:00")])
+        with pytest.raises(HTTPException) as exc:
+            await shift_planning.publish(COMPANY, "2026-11-03", "2026-11-03",
+                                         acknowledge_warnings=False, notify=False,
+                                         published_by="admin")
+        assert exc.value.detail["error_code"] == "shift_plan.warnings_not_acknowledged"
+
+    async def test_unpublished_draft_before_range_does_not_warn(self, fake_db):
+        await self._cell(fake_db, "2026-11-02", [_stored("N", "22:00", "06:00")])
+        await self._cell(fake_db, "2026-11-03", [_stored("M", "08:00", "16:00")])
+        result = await shift_planning.publish(COMPANY, "2026-11-03", "2026-11-03",
+                                              acknowledge_warnings=False, notify=False,
+                                              published_by="admin")
+        assert result["changed_cells"] == 1
+
 
 # ---------------------------------------------------------------------------
 # Copy week (task 2.4)

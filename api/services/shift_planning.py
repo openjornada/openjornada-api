@@ -491,8 +491,10 @@ async def publish(
 
 async def compute_range_warnings(company_id: str, start_date: str, end_date: str) -> List[dict]:
     """
-    Warnings over the company drafts in the range, identical to what the
-    roster shows (same day-before-range lookback).
+    Warnings for a publish. Days inside the range use the draft (what is about
+    to go live). The day before uses ``published``: a cleared draft must not
+    hide a night shift the worker still has, and an unpublished draft must not
+    invent a warning. The roster grid still warns from drafts.
     """
     prev_day = (date.fromisoformat(start_date) - timedelta(days=1)).isoformat()
     docs = await db.PlannedShifts.find(
@@ -500,8 +502,12 @@ async def compute_range_warnings(company_id: str, start_date: str, end_date: str
     ).to_list(length=None)
     days_per_worker: Dict[str, Dict[str, List[dict]]] = {}
     for doc in docs:
-        if doc.get("shifts"):
-            days_per_worker.setdefault(doc["worker_id"], {})[doc["date"]] = doc["shifts"]
+        if doc["date"] < start_date:
+            shifts = doc.get("published") or []
+        else:
+            shifts = doc.get("shifts") or []
+        if shifts:
+            days_per_worker.setdefault(doc["worker_id"], {})[doc["date"]] = shifts
 
     worker_ids = list(days_per_worker)
     absences_by_worker = await accepted_absence_dates(company_id, worker_ids, start_date, end_date)
