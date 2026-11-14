@@ -65,7 +65,14 @@ def _require_monday(week_start: str) -> None:
 
 def check_range(start_date: str, end_date: str) -> None:
     """Shared 42-day range rule for roster, publish and week queries."""
-    start, end = date.fromisoformat(start_date), date.fromisoformat(end_date)
+    try:
+        start, end = date.fromisoformat(start_date), date.fromisoformat(end_date)
+    except ValueError:
+        raise_api_error(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            error_code="shift_plan.invalid_range",
+            message="La fecha no es un día válido",
+        )
     if end < start:
         raise_api_error(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

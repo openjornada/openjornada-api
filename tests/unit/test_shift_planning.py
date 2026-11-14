@@ -540,6 +540,12 @@ class TestRoster:
         assert worker_row["planned_minutes"] == 450
         assert worker_row["cells"]["2026-11-02"][0]["start_time"] == "06:00"
 
+    def test_impossible_date_is_422(self):
+        with pytest.raises(HTTPException) as exc:
+            shift_planning.check_range("2026-02-31", "2026-03-02")
+        assert exc.value.status_code == 422
+        assert exc.value.detail["error_code"] == "shift_plan.invalid_range"
+
     async def test_range_too_long(self, fake_db):
         with pytest.raises(HTTPException) as exc:
             await shift_planning.get_roster(COMPANY, "2026-01-01", "2026-03-01")
