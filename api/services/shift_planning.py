@@ -570,10 +570,9 @@ async def copy_week(company_id: str, source_week_start: str, target_week_start: 
                 skipped += 1 if source_shifts else 0
                 final_week[target_day] = existing
             elif source_shifts or (conflict == "overwrite" and existing):
-                # Source shifts are copied as custom shifts (no type id): the
-                # draft values are preserved verbatim (D2). Empty source with
-                # overwrite clears the target cell.
-                resolved = await resolve_cell_items(company_id, source_shifts)
+                # Copy the stored dicts. Re-resolving the type fails once that
+                # type is soft-deleted, and the cell already holds the hours (D2).
+                resolved = [dict(s) for s in source_shifts]
                 writes.append((worker_id, target_day, resolved))
                 final_week[target_day] = resolved
                 copied += 1

@@ -642,6 +642,17 @@ class TestCopyWeek:
         assert result == {"copied": 0, "skipped": 0}
         assert len(fake_db.PlannedShifts.docs) == 1
 
+    async def test_copy_keeps_shifts_when_type_was_deleted(self, fake_db):
+        fake_db.Workers.docs.append(active_worker())
+        stored = _stored("M", "06:00", "14:00")
+        stored["shift_type_id"] = TYPE_ID
+        await self._source(fake_db, "2026-11-02", [stored])
+        result = await shift_planning.copy_week(COMPANY, "2026-11-02", "2026-11-09", "skip")
+        assert result == {"copied": 1, "skipped": 0}
+        target = next(d for d in fake_db.PlannedShifts.docs if d["date"] == "2026-11-09")
+        assert target["shifts"][0]["start_time"] == "06:00"
+        assert target["shifts"][0]["shift_type_id"] == TYPE_ID
+
     async def test_overlapping_weeks_rejected(self, fake_db):
         with pytest.raises(HTTPException) as exc:
             await shift_planning.copy_week(COMPANY, "2026-11-02", "2026-11-05", "skip")
