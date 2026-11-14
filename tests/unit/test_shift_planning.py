@@ -704,9 +704,14 @@ class TestCopyWeek:
         assert target["shifts"][0]["start_time"] == "06:00"
         assert target["shifts"][0]["shift_type_id"] == TYPE_ID
 
-    async def test_overlapping_weeks_rejected(self, fake_db):
+    async def test_non_monday_rejected(self, fake_db):
         with pytest.raises(HTTPException) as exc:
             await shift_planning.copy_week(COMPANY, "2026-11-02", "2026-11-05", "skip")
+        assert exc.value.detail["error_code"] == "shift_plan.week_not_monday"
+
+    async def test_same_week_rejected(self, fake_db):
+        with pytest.raises(HTTPException) as exc:
+            await shift_planning.copy_week(COMPANY, "2026-11-02", "2026-11-02", "skip")
         assert exc.value.detail["error_code"] == "shift_plan.overlapping_weeks"
 
 

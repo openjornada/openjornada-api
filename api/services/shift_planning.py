@@ -54,6 +54,15 @@ def shift_dict(item) -> dict:
 # Validation helpers ----------------------------------------------------------
 
 
+def _require_monday(week_start: str) -> None:
+    if date.fromisoformat(week_start).weekday() != 0:
+        raise_api_error(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            error_code="shift_plan.week_not_monday",
+            message="La semana debe empezar en lunes",
+        )
+
+
 def check_range(start_date: str, end_date: str) -> None:
     """Shared 42-day range rule for roster, publish and week queries."""
     start, end = date.fromisoformat(start_date), date.fromisoformat(end_date)
@@ -539,6 +548,8 @@ async def copy_week(company_id: str, source_week_start: str, target_week_start: 
     before anything is written. Deactivated or departed workers are excluded.
     Results stay draft (they only reach the worker on the next publish).
     """
+    _require_monday(source_week_start)
+    _require_monday(target_week_start)
     source_days = week_dates(source_week_start)
     target_days = week_dates(target_week_start)
     check_range(source_week_start, source_days[-1])
